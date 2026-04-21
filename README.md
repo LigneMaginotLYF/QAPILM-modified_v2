@@ -76,6 +76,7 @@ inline.  The most important options are:
 | `solver.store_u_snapshots` | Whether to keep `u` snapshots during the inverse solve |
 | `measurements.ukmat` / `chkmat` | Grid-index pairs `[row, col]` for `u` / `C` observations |
 | `measurements.ukt` | Time-step indices at which `u` is observed |
+| `monte_carlo.N_mc` | Number of Monte Carlo restarts (default `1` → single run) |
 
 ### 2. Edit `sweep.yaml`
 
@@ -125,19 +126,22 @@ Each sweep entry creates a time-stamped sub-folder inside `results/`
 ```
 results/
   baseline_20250101_120000/
-    QAPILM_Eps_loss.npy   # loss curve
-    coefe.npy             # optimised basis coefficients
-    ch_est.npy            # estimated C field
-    ch_true.npy           # ground-truth C field
-    triplot_C.png         # three-panel comparison plot
+    QAPILM_Eps_loss.npy     # loss curve for N_mc=1; for N_mc>1: QAPILM_Eps_loss_mc000.npy … mc{N_mc-1:03d}.npy
+    mc_weights.npy          # all per-run weight vectors, shape (N_mc, nb)
+    coefe.npy               # single-run coefe (only written when N_mc == 1)
+    ch_est.npy              # mean estimated C field
+    u_mean_est.npy          # mean estimated U field at last observation time
+    ch_true.npy             # ground-truth C field
+    triplot_C.png           # three-panel comparison plot (mean C field)
   eps_0.05_20250101_120100/
     ...
-  coeffs_batch.csv        # summary table: one row per run
+  coeffs_batch.csv          # summary table: one row per run
 ```
 
-`coeffs_batch.csv` contains columns for `run_name`, `basis_type`,
+`coeffs_batch.csv` contains columns for `run_name`, `N_mc`, `basis_type`,
 `epsilon`, `regen_fluc`, `fluc_seed`, `Rcv`, `final_loss`, `cos_sim`,
-`RMSE`, `max_err`, and all optimised coefficients (`coef_0`, `coef_1`, …).
+`RMSE`, `max_err`, and (for `N_mc == 1`) all optimised coefficients
+(`coef_0`, `coef_1`, …).
 
 ---
 
@@ -159,9 +163,26 @@ computation and potential overfitting with sparse data.
 ## Notes
 
 - **Backward compatibility**: existing output file names and figure formats
-  produced by `qapilm_rect.py` are preserved unchanged.
+  produced by `qapilm_rect.py` are preserved unchanged.  When `N_mc == 1`
+  the output folder is byte-for-byte identical to the original single-run
+  output (plus the new `mc_weights.npy` file).
 - **Memory**: `solver.memory_mode: stream` (default) uses O(1) memory in
   the time dimension; switch to `full` only if you need the full `u` tensor.
 - **Reproducibility**: set `regen_fluc: true` and fix `fluc_seed` for
   deterministic runs independent of the legacy CSV files.
+- **Monte Carlo UQ**: set `monte_carlo.N_mc` to a value greater than 1 to
+  run the inverse solver multiple times with independent random initial
+  coefficients.  All per-run weight vectors are saved to `mc_weights.npy`
+  (shape `(N_mc, nb)`) for downstream uncertainty quantification.  The mean
+  C and mean U fields (averaged in field space, not weight space) replace the
+  single-estimate outputs in `ch_est.npy` and `triplot_C.png`.
+  **Computational cost**: each MC run performs one inverse solve **and** one
+  additional forward solve (to decode the U field); total wall-time scales
+  roughly as `N_mc × (1 inverse + 1 forward)` per sweep entry.
+- **YAML encoding**: all YAML files (`config.yaml`, `sweep.yaml`, custom
+  configs) must be saved with **UTF-8** encoding.  On Windows the default
+  system encoding (e.g. GBK) can cause a `UnicodeDecodeError` when loading;
+  the loader in `run_batch.py` always opens YAML files with
+  `encoding="utf-8"` to avoid this.  When editing YAML files in a text
+  editor, ensure the file is saved as UTF-8 (without BOM).
 
