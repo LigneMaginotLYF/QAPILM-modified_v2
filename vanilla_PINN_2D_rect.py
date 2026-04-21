@@ -485,7 +485,8 @@ class PINN2DConsolidation:
         """
         g = self.geom
         top, bot, left, right = g.bcs
-        # u0 must be a scalar for forward_solver — pass the scalar directly
+        # forward_solver accepts both a scalar and a matrix u0; pass the
+        # uniform-IC matrix so utens[0] is set correctly for all grid points.
         u0_scalar = float(g.u0)
         u0_mat = np.ones((qapilm_solver.numv + 1, qapilm_solver.numh + 1)) * u0_scalar
         numt = qapilm_solver.ilim

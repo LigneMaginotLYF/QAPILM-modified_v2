@@ -71,7 +71,7 @@ inline.  The most important options are:
 | `problem.fluc_seed` | RNG seed when `regen_fluc: true` |
 | `problem.filedir` / `file_rawS` / `file_Lmat` | Paths to legacy CSV fluctuation files (backward compatible) |
 | `problem.bcs` | Boundary conditions `[top, bot, left, right]` (0 = Dirichlet, 1 = Neumann) |
-| `basis.type` | Basis type: `poly_sin` · `dct` · `legendre` · `wavelet` |
+| `basis.type` | Basis type: `poly` · `sin` · `dct` · `legendre` · `wavelet` (solo) or any duo like `poly+sin` · `dct+legendre` · `poly+wavelet`, etc. |
 | `model.epsilon` | ε-insensitive loss threshold (relative to observation magnitude) |
 | `solver.memory_mode` | `stream` (default, memory-optimised) or `full` (legacy) |
 | `solver.store_u_snapshots` | Whether to keep `u` snapshots during the inverse solve |
@@ -148,12 +148,43 @@ results/
 
 ## Configuring basis types
 
-| `basis.type` | Additional keys | Notes |
-|--------------|-----------------|-------|
-| `poly_sin` | `orderx`, `orderz` | Polynomial + sine harmonics (default) |
-| `dct` | `orderx`, `orderz` | Polynomial + discrete cosine terms |
-| `legendre` | `orderx`, `orderz` | Polynomial + Legendre polynomials |
-| `wavelet` | `wav_levels_x`, `wav_levels_z` | Polynomial + Haar wavelets |
+Basis types are specified as a solo component name or two components joined
+with `"+"`.  The polynomial prefix is **no longer forced** — each type is
+clean and self-contained.
+
+### Solo types
+
+| `basis.type` | Description | `orderx` / `orderz` | `wav_levels_x/z` |
+|--------------|-------------|---------------------|-----------------|
+| `poly`       | 6-term 2D polynomial: 1, x, z, x², z², xz | — | — |
+| `sin`        | Sine harmonics sin(2ᵏ x̄), sin(2ᵏ z̄) | ✓ | — |
+| `dct`        | Discrete cosine cos(πk x̄), cos(πk z̄) | ✓ | — |
+| `legendre`   | Legendre polynomials Pₖ(x̄), Pₖ(z̄) | ✓ | — |
+| `wavelet`    | Haar wavelets | — | ✓ |
+
+### Duo types (any two components joined with `+`)
+
+| `basis.type` | Components concatenated |
+|--------------|------------------------|
+| `poly+sin`   | polynomial + sine (same as legacy `poly_sin`) |
+| `poly+dct`   | polynomial + DCT |
+| `poly+legendre` | polynomial + Legendre |
+| `poly+wavelet`  | polynomial + Haar wavelets |
+| `sin+dct`    | sine + DCT |
+| `sin+legendre` | sine + Legendre |
+| `sin+wavelet`  | sine + Haar wavelets |
+| `dct+legendre` | DCT + Legendre |
+| `dct+wavelet`  | DCT + Haar wavelets |
+| `legendre+wavelet` | Legendre + Haar wavelets |
+
+> **Backward-compatible alias**: `"poly_sin"` is silently mapped to
+> `"poly+sin"`.  Existing config files using `type: "poly_sin"` will
+> continue to work without changes.
+>
+> **Migration note**: the old names `"dct"`, `"legendre"`, and `"wavelet"`
+> now produce **clean solo** versions (no poly prefix).  To reproduce the
+> old poly-prefixed behaviour, change to `"poly+dct"`, `"poly+legendre"`,
+> or `"poly+wavelet"` respectively.
 
 Higher `orderx` / `orderz` increases the number of basis functions and
 the expressiveness of the estimated `C` field, at the cost of more

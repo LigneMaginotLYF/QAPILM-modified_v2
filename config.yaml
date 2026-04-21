@@ -54,18 +54,30 @@ problem:
 # Basis configuration  (parameterisation of C field)
 # ------------------------------------------------------------------
 basis:
-  # Basis type – choose one of:
-  #   poly_sin  : polynomial + sine harmonics  (default, well-tested)
-  #   dct       : polynomial + discrete cosine transform
-  #   wavelet   : polynomial + Haar wavelets
-  #   legendre  : polynomial + Legendre polynomials
-  type: "poly_sin"
+  # Basis type for the C-field estimator.
+  # Use a solo name or two names joined with "+".
+  #
+  # Solo (only that component, no automatic poly prefix):
+  #   "poly"     – 6-term 2-D polynomial [1, x, z, x², z², xz]
+  #   "sin"      – sine harmonics  sin(2^k · x̄) and sin(2^k · z̄)
+  #   "dct"      – discrete cosine  cos(πk x̄) and cos(πk z̄)
+  #   "legendre" – Legendre polynomials P_k(x̄) and P_k(z̄)
+  #   "wavelet"  – Haar wavelets
+  #
+  # Duo (concatenation of two components, any combination):
+  #   "poly+sin", "poly+dct", "poly+legendre", "poly+wavelet",
+  #   "sin+dct",  "sin+legendre", "sin+wavelet",
+  #   "dct+legendre", "dct+wavelet", "legendre+wavelet"
+  #
+  # Backward-compatible alias: "poly_sin" → "poly+sin"
+  type: "poly+sin"
 
   # Number of sine/DCT/Legendre terms along each axis
+  # (only used when the type includes "sin", "dct", or "legendre")
   orderx: 1
   orderz: 3
 
-  # Wavelet decomposition levels (used only when type == "wavelet")
+  # Haar wavelet decomposition levels (only used when type includes "wavelet")
   wav_levels_x: 2
   wav_levels_z: 2
 
