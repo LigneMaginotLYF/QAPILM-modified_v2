@@ -25,26 +25,47 @@ sweeps:
     model:
       epsilon: 0.20
 
-  # --- Sweep 4: DCT basis instead of poly_sin ---
+  # --- Sweep 4: DCT basis (solo – no poly prefix) ---
   - name: "basis_dct"
     basis:
-      type: "dct"
+      type: "dct"          # solo DCT: clean ablation without polynomial terms
       orderx: 3
       orderz: 4
 
-  # --- Sweep 5: Legendre basis ---
+  # --- Sweep 4b: poly+DCT duo (equivalent to old "dct" behaviour) ---
+  - name: "basis_poly_dct"
+    basis:
+      type: "poly+dct"     # polynomial + DCT (legacy equivalent)
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 5: Legendre basis (solo) ---
   - name: "basis_legendre"
     basis:
-      type: "legendre"
+      type: "legendre"     # solo Legendre: ablation without polynomial
       orderx: 3
       orderz: 4
 
-  # --- Sweep 6: Haar wavelet basis ---
+  # --- Sweep 5b: poly+Legendre duo ---
+  - name: "basis_poly_legendre"
+    basis:
+      type: "poly+legendre"
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 6: Haar wavelet basis (solo) ---
   - name: "basis_wavelet"
     basis:
-      type: "wavelet"
+      type: "wavelet"      # solo Haar wavelets
       wav_levels_x: 2
       wav_levels_z: 3
+
+  # --- Sweep 6b: DCT+Legendre duo (cross-type combo) ---
+  - name: "basis_dct_legendre"
+    basis:
+      type: "dct+legendre"
+      orderx: 3
+      orderz: 4
 
   # --- Sweep 7: regen fluctuation with different seed ---
   - name: "regen_seed_42"

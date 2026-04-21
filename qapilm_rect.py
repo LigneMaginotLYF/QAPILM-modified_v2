@@ -43,11 +43,27 @@ class ProblemConfig:
 
 @dataclass
 class BasisConfig:
-    # type: poly_sin | dct | wavelet | legendre
-    type: str = "poly_sin"
+    # Basis type – one of the solo names or a duo joined with "+":
+    #
+    #  Solo (clean, no forced poly prefix):
+    #    "poly"     – 6-term 2D polynomial  [1, x, z, x², z², xz]
+    #    "sin"      – sine harmonics  [sin(2^k x), sin(2^k z)]
+    #    "dct"      – discrete cosine  [cos(π k x), cos(π k z)]
+    #    "legendre" – Legendre polynomials  [P_k(x), P_k(z)]
+    #    "wavelet"  – Haar wavelets
+    #
+    #  Duo (any two components separated by "+"):
+    #    "poly+sin", "poly+dct", "poly+legendre", "poly+wavelet",
+    #    "sin+dct",  "sin+legendre", "sin+wavelet",
+    #    "dct+legendre", "dct+wavelet", "legendre+wavelet"
+    #
+    #  Backward-compatible alias:
+    #    "poly_sin"  →  treated as "poly+sin"
+    type: str = "poly+sin"
+    # Number of sine/DCT/Legendre terms per axis (used by sin, dct, legendre)
     orderx: int = 1
     orderz: int = 3
-    # wavelet levels (for Haar-style)
+    # Haar wavelet decomposition levels (used by wavelet)
     wav_levels_x: int = 2
     wav_levels_z: int = 2
 
@@ -156,169 +172,249 @@ def cos_sim(tenA, tenB):
 # ============================================================
 # BASIS FACTORY
 # ============================================================
+
+# Valid solo component names.
+_VALID_COMPONENTS = frozenset(["poly", "sin", "dct", "legendre", "wavelet"])
+
+# Backward-compatible aliases: old name → new canonical "+"-separated string.
+_BASIS_ALIASES = {
+    "poly_sin": "poly+sin",
+}
+
+
+def _parse_basis_type(type_str: str) -> list:
+    """Parse a basis type string into an ordered list of component names.
+
+    Accepted formats
+    ----------------
+    "<name>"      – solo component, e.g.  "poly",  "dct"
+    "<A>+<B>"     – duo combination, e.g. "poly+sin",  "dct+legendre"
+
+    The legacy alias "poly_sin" is silently mapped to "poly+sin".
+    At most two components are supported; repeating the same component is
+    an error.  Unknown component names raise a clear ValueError.
+    """
+    canonical = _BASIS_ALIASES.get(type_str, type_str)
+    parts = [p.strip() for p in canonical.split("+")]
+
+    if not parts or any(not p for p in parts):
+        raise ValueError(
+            f"Invalid basis type string: {type_str!r}.  "
+            f"Use a component name or 'A+B'."
+        )
+    if len(parts) > 2:
+        raise ValueError(
+            f"Basis type {type_str!r} has {len(parts)} components; "
+            "at most 2 are supported (solo or duo)."
+        )
+    unknown = [p for p in parts if p not in _VALID_COMPONENTS]
+    if unknown:
+        raise ValueError(
+            f"Unknown basis component(s) {unknown!r} in type {type_str!r}.  "
+            f"Valid components: {sorted(_VALID_COMPONENTS)}"
+        )
+    if len(parts) == 2 and parts[0] == parts[1]:
+        raise ValueError(
+            f"Duo basis type {type_str!r} repeats the same component."
+        )
+    return parts
+
+
 class BasisFactory:
+    """Builds basis-function vectors for the QAPILM estimator.
+
+    The basis is determined by ``BasisConfig.type`` which may name a single
+    component ("poly", "sin", "dct", "legendre", "wavelet") or two components
+    joined with "+" (e.g. "poly+sin", "dct+legendre").  Each component
+    contributes its terms independently; they are concatenated in order.
+
+    The backward-compatible alias "poly_sin" is equivalent to "poly+sin".
+    """
+
     def __init__(self, pconf: ProblemConfig, bconf: BasisConfig):
         self.p = pconf
         self.b = bconf
+        self._components = _parse_basis_type(bconf.type)
 
-    # ---- polynomial base (same as original) ----
-    def poly_base(self, x, z):
-        return np.array([1, x, z, x**2, z**2, x*z])
+    # ------------------------------------------------------------------
+    # Per-component builders  (normalised coords x, z ∈ [0,1])
+    # ------------------------------------------------------------------
 
-    def poly_dx(self, x, z):
-        return np.array([0, 1, 0, 2*x, 0, z]) / self.p.Lh
+    # ---- polynomial (2D, has cross-terms) ----------------------------
+    def _poly_val(self, x, z):
+        return np.array([1.0, x, z, x**2, z**2, x*z])
 
-    def poly_dz(self, x, z):
-        return np.array([0, 0, 1, 0, 2*z, x]) / self.p.Lv
+    def _poly_dx(self, x, z):
+        return np.array([0.0, 1.0, 0.0, 2*x, 0.0, z]) / self.p.Lh
 
-    # ---- DCT ----
-    def dct_1d(self, x, order):
-        # x in [0,1]
-        k = np.arange(order)
+    def _poly_dz(self, x, z):
+        return np.array([0.0, 0.0, 1.0, 0.0, 2*z, x]) / self.p.Lv
+
+    # ---- sine harmonics ----------------------------------------------
+    def _sin_val_x(self, x):
+        return np.sin(2**np.arange(self.b.orderx) * x)
+
+    def _sin_val_z(self, z):
+        return np.sin(2**np.arange(self.b.orderz) * z)
+
+    def _sin_dx_x(self, x):
+        freqs = 2**np.arange(self.b.orderx)
+        return np.cos(freqs * x) * freqs / self.p.Lh
+
+    def _sin_dz_z(self, z):
+        freqs = 2**np.arange(self.b.orderz)
+        return np.cos(freqs * z) * freqs / self.p.Lv
+
+    # ---- DCT ---------------------------------------------------------
+    def _dct_val_x(self, x):
+        k = np.arange(self.b.orderx)
         return np.cos(np.pi * k * x)
 
-    def dct_1d_dx(self, x, order):
-        k = np.arange(order)
+    def _dct_val_z(self, z):
+        k = np.arange(self.b.orderz)
+        return np.cos(np.pi * k * z)
+
+    def _dct_dx_x(self, x):
+        k = np.arange(self.b.orderx)
         return -np.pi * k * np.sin(np.pi * k * x) / self.p.Lh
 
-    def dct_1d_dz(self, z, order):
-        k = np.arange(order)
+    def _dct_dz_z(self, z):
+        k = np.arange(self.b.orderz)
         return -np.pi * k * np.sin(np.pi * k * z) / self.p.Lv
 
-    # ---- Legendre ----
-    def legendre_1d(self, x, order):
+    # ---- Legendre polynomials ----------------------------------------
+    def _legendre_val(self, x_norm, order):
         from numpy.polynomial.legendre import legval
-        k = np.arange(order)
-        # map x in [0,1] -> [-1,1]
-        xm = 2*x - 1
+        xm = 2.0 * x_norm - 1.0   # map [0,1] → [-1,1]
         vals = []
-        for deg in k:
-            coeff = np.zeros(deg+1)
-            coeff[-1] = 1
+        for deg in range(order):
+            coeff = np.zeros(deg + 1)
+            coeff[-1] = 1.0
             vals.append(legval(xm, coeff))
         return np.array(vals)
 
-    def legendre_1d_dx(self, x, order):
-        # numerical derivative (stable enough for small order)
+    def _legendre_dval(self, x_norm, order, L):
         eps = 1e-6
-        return (self.legendre_1d(x+eps, order) - self.legendre_1d(x-eps, order)) / (2*eps*self.p.Lh)
+        return (
+            self._legendre_val(x_norm + eps, order)
+            - self._legendre_val(x_norm - eps, order)
+        ) / (2.0 * eps * L)
 
-    def legendre_1d_dz(self, z, order):
-        eps = 1e-6
-        return (self.legendre_1d(z+eps, order) - self.legendre_1d(z-eps, order)) / (2*eps*self.p.Lv)
-
-    # ---- Haar wavelet ----
-    def haar_wavelet_1d(self, x, levels):
-        # returns concatenated [scaling + wavelets], simple orthogonal-ish basis
+    # ---- Haar wavelet ------------------------------------------------
+    def _haar_val(self, x_norm, levels):
         vals = [1.0]
-        for lev in range(1, levels+1):
+        for lev in range(1, levels + 1):
             num = 2**lev
             for k in range(num):
-                left = k/num
-                mid = (k+0.5)/num
-                right = (k+1)/num
-                if left <= x < mid:
+                lo, mid, hi = k / num, (k + 0.5) / num, (k + 1) / num
+                if lo <= x_norm < mid:
                     vals.append(1.0)
-                elif mid <= x < right:
+                elif mid <= x_norm < hi:
                     vals.append(-1.0)
                 else:
                     vals.append(0.0)
         return np.array(vals)
 
-    def haar_1d_dx(self, x, levels):
-        # piecewise constant -> derivative ~ 0 (discontinuous); set 0 for stability
-        return np.zeros(1 + sum(2**lev for lev in range(1, levels+1))) / self.p.Lh
+    def _haar_size(self, levels):
+        return 1 + sum(2**lev for lev in range(1, levels + 1))
 
-    def haar_1d_dz(self, z, levels):
-        return np.zeros(1 + sum(2**lev for lev in range(1, levels+1))) / self.p.Lv
+    # ------------------------------------------------------------------
+    # Component dispatchers  (val / dx / dz for a named component)
+    # ------------------------------------------------------------------
 
-    # ---- main entry ----
+    def _comp_val(self, name, x, z):
+        if name == "poly":
+            return self._poly_val(x, z)
+        if name == "sin":
+            return np.concatenate([self._sin_val_x(x), self._sin_val_z(z)])
+        if name == "dct":
+            return np.concatenate([self._dct_val_x(x), self._dct_val_z(z)])
+        if name == "legendre":
+            return np.concatenate([
+                self._legendre_val(x, self.b.orderx),
+                self._legendre_val(z, self.b.orderz),
+            ])
+        if name == "wavelet":
+            return np.concatenate([
+                self._haar_val(x, self.b.wav_levels_x),
+                self._haar_val(z, self.b.wav_levels_z),
+            ])
+        raise ValueError(f"Unknown component: {name!r}")
+
+    def _comp_dx(self, name, x, z):
+        """Derivative w.r.t. physical x of the component vector."""
+        if name == "poly":
+            return self._poly_dx(x, z)
+        if name == "sin":
+            return np.concatenate([
+                self._sin_dx_x(x),
+                np.zeros(self.b.orderz),
+            ])
+        if name == "dct":
+            return np.concatenate([
+                self._dct_dx_x(x),
+                np.zeros(self.b.orderz),
+            ])
+        if name == "legendre":
+            return np.concatenate([
+                self._legendre_dval(x, self.b.orderx, self.p.Lh),
+                np.zeros(self.b.orderz),
+            ])
+        if name == "wavelet":
+            # Haar wavelets are piecewise-constant → derivative ≈ 0
+            return np.zeros(
+                self._haar_size(self.b.wav_levels_x)
+                + self._haar_size(self.b.wav_levels_z)
+            )
+        raise ValueError(f"Unknown component: {name!r}")
+
+    def _comp_dz(self, name, x, z):
+        """Derivative w.r.t. physical z of the component vector."""
+        if name == "poly":
+            return self._poly_dz(x, z)
+        if name == "sin":
+            return np.concatenate([
+                np.zeros(self.b.orderx),
+                self._sin_dz_z(z),
+            ])
+        if name == "dct":
+            return np.concatenate([
+                np.zeros(self.b.orderx),
+                self._dct_dz_z(z),
+            ])
+        if name == "legendre":
+            return np.concatenate([
+                np.zeros(self.b.orderx),
+                self._legendre_dval(z, self.b.orderz, self.p.Lv),
+            ])
+        if name == "wavelet":
+            return np.zeros(
+                self._haar_size(self.b.wav_levels_x)
+                + self._haar_size(self.b.wav_levels_z)
+            )
+        raise ValueError(f"Unknown component: {name!r}")
+
+    # ------------------------------------------------------------------
+    # Public API  (unchanged interface)
+    # ------------------------------------------------------------------
+
     def basis(self, vector):
-        x, z = (np.array(vector) / np.array([self.p.Lh, self.p.Lv]))
-
-        if self.b.type == "poly_sin":
-            lb = self.poly_base(x, z)
-            lx = np.sin(2**np.arange(self.b.orderx) * x)
-            lz = np.sin(2**np.arange(self.b.orderz) * z)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "dct":
-            lb = self.poly_base(x, z)
-            lx = self.dct_1d(x, self.b.orderx)
-            lz = self.dct_1d(z, self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "legendre":
-            lb = self.poly_base(x, z)
-            lx = self.legendre_1d(x, self.b.orderx)
-            lz = self.legendre_1d(z, self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "wavelet":
-            lb = self.poly_base(x, z)
-            lx = self.haar_wavelet_1d(x, self.b.wav_levels_x)
-            lz = self.haar_wavelet_1d(z, self.b.wav_levels_z)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        raise ValueError(f"Unknown basis type: {self.b.type}")
+        x, z = np.array(vector) / np.array([self.p.Lh, self.p.Lv])
+        return np.concatenate(
+            [self._comp_val(c, x, z) for c in self._components], axis=None
+        )
 
     def basis_dx(self, vector):
-        x, z = (np.array(vector) / np.array([self.p.Lh, self.p.Lv]))
-
-        if self.b.type == "poly_sin":
-            lb = self.poly_dx(x, z)
-            lx = np.cos(2**np.arange(self.b.orderx) * x) * (2**np.arange(self.b.orderx)) / self.p.Lh
-            lz = np.zeros(self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "dct":
-            lb = self.poly_dx(x, z)
-            lx = self.dct_1d_dx(x, self.b.orderx)
-            lz = np.zeros(self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "legendre":
-            lb = self.poly_dx(x, z)
-            lx = self.legendre_1d_dx(x, self.b.orderx)
-            lz = np.zeros(self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "wavelet":
-            lb = self.poly_dx(x, z)
-            lx = self.haar_1d_dx(x, self.b.wav_levels_x)
-            lz = np.zeros(1 + sum(2**lev for lev in range(1, self.b.wav_levels_z+1)))
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        raise ValueError(f"Unknown basis type: {self.b.type}")
+        x, z = np.array(vector) / np.array([self.p.Lh, self.p.Lv])
+        return np.concatenate(
+            [self._comp_dx(c, x, z) for c in self._components], axis=None
+        )
 
     def basis_dz(self, vector):
-        x, z = (np.array(vector) / np.array([self.p.Lh, self.p.Lv]))
-
-        if self.b.type == "poly_sin":
-            lb = self.poly_dz(x, z)
-            lx = np.zeros(self.b.orderx)
-            lz = np.cos(2**np.arange(self.b.orderz) * z) * (2**np.arange(self.b.orderz)) / self.p.Lv
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "dct":
-            lb = self.poly_dz(x, z)
-            lx = np.zeros(self.b.orderx)
-            lz = self.dct_1d_dz(z, self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "legendre":
-            lb = self.poly_dz(x, z)
-            lx = np.zeros(self.b.orderx)
-            lz = self.legendre_1d_dz(z, self.b.orderz)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        if self.b.type == "wavelet":
-            lb = self.poly_dz(x, z)
-            lx = np.zeros(1 + sum(2**lev for lev in range(1, self.b.wav_levels_x+1)))
-            lz = self.haar_1d_dz(z, self.b.wav_levels_z)
-            return np.concatenate([lb, lx, lz], axis=None)
-
-        raise ValueError(f"Unknown basis type: {self.b.type}")
+        x, z = np.array(vector) / np.array([self.p.Lh, self.p.Lv])
+        return np.concatenate(
+            [self._comp_dz(c, x, z) for c in self._components], axis=None
+        )
 
 
 # ============================================================
@@ -428,6 +524,9 @@ class RectangularQAPILM:
         utens = np.zeros((numt+1, self.numv+1, self.numh+1), dtype=np.float64)
         utens[0,:,:] = u0
         udeg = np.ones(numt+1, dtype=np.float64)
+        # udeg normalization requires a scalar reference value;
+        # when u0 is a matrix (uniform IC) take its mean.
+        u0_scalar = float(np.mean(u0)) if np.ndim(u0) > 0 else float(u0)
 
         for i in range(numt):
             cu = utens[i,:,:]
@@ -436,7 +535,7 @@ class RectangularQAPILM:
             utens[i+1,:,-1] = right * utens[i+1,:,-2]
             utens[i+1,0,:]  = top   * utens[i+1,1,:]
             utens[i+1,-1,:] = bot   * utens[i+1,-2,:]
-            udeg[i+1] = np.mean(utens[i+1]) / u0
+            udeg[i+1] = np.mean(utens[i+1]) / u0_scalar
         return utens, udeg
 
     # =========================================================
