@@ -1,0 +1,121 @@
+# =============================================================
+# config.yaml -- Base configuration for QAPILM rectangular solver
+# Edit this file to change the default problem/model/solver setup.
+# Values here are overridden per-run by entries in sweep.yaml.
+# =============================================================
+
+# ------------------------------------------------------------------
+# Problem configuration  (geometry, material, BCs, fluctuation)
+# ------------------------------------------------------------------
+problem:
+  # Domain dimensions (metres)
+  Lh: 10.0        # horizontal (x) length
+  Lv: 5.0         # vertical  (z) length
+  Lt: 2.0         # total simulation time (years)
+
+  # FD grid resolution [dx, dz]
+  spatial_reso: [0.2, 0.2]
+
+  # Anisotropy ratio C_v / C_h
+  Rcv: 1.0
+
+  # Spatial fluctuation standard deviation
+  sigma: 0.3
+
+  # Trend polynomial coefficients  [a0, ax, az, axx, azz, axz]
+  coeft: [-1, -0.5, 1, 0.5, 2, -0.2]
+
+  # Initial excess pore-water pressure
+  u0: 1.0
+
+  # CFL stability factor (fraction of theoretical maximum dt)
+  alpha: 0.05
+
+  # Offset constant used in C field construction
+  const: -1.0
+
+  # External CSV files for pre-generated fluctuation fields.
+  # Set regen_fluc: true to ignore these and generate fresh random fields.
+  # Change filedir to a relative path (e.g. "./data/") or absolute path
+  # appropriate for your system.  The default below is a placeholder.
+  filedir: "./data/"
+  file_rawS: "rawSlistA-0.3sig-2by2.csv"
+  file_Lmat: "Lmat-2by2.csv"
+
+  # Boundary conditions [top, bot, left, right].
+  # 0 = Dirichlet (free-draining),  1 = Neumann (undrained / mirror).
+  bcs: [0, 1, 0, 1]
+
+  # Fluctuation controls
+  regen_fluc: false   # true  → generate new random field (ignores CSV files above)
+  fluc_seed: 123      # RNG seed used when regen_fluc is true (for reproducibility)
+
+# ------------------------------------------------------------------
+# Basis configuration  (parameterisation of C field)
+# ------------------------------------------------------------------
+basis:
+  # Basis type – choose one of:
+  #   poly_sin  : polynomial + sine harmonics  (default, well-tested)
+  #   dct       : polynomial + discrete cosine transform
+  #   wavelet   : polynomial + Haar wavelets
+  #   legendre  : polynomial + Legendre polynomials
+  type: "poly_sin"
+
+  # Number of sine/DCT/Legendre terms along each axis
+  orderx: 1
+  orderz: 3
+
+  # Wavelet decomposition levels (used only when type == "wavelet")
+  wav_levels_x: 2
+  wav_levels_z: 2
+
+# ------------------------------------------------------------------
+# Model (training / optimisation) configuration
+# ------------------------------------------------------------------
+model:
+  lam: 1.0        # weight for permeability (C) data loss
+  lamu: 1.0       # weight for pore-pressure (u) data loss
+  lr: 0.1         # Adam learning rate
+  ltol: 1.0e-5    # loss convergence threshold (early stop)
+  gtol: 1.0e-9    # gradient-norm convergence threshold (early stop)
+  itol: 500       # maximum optimisation epochs
+
+  # Epsilon threshold for the epsilon-insensitive loss.
+  # Residuals below epsilon * |observation| are treated as zero.
+  # Larger epsilon → wider acceptance zone → more robustness to noise.
+  epsilon: 0.1
+
+# ------------------------------------------------------------------
+# Solver configuration
+# ------------------------------------------------------------------
+solver:
+  # memory_mode controls which solver variant is used:
+  #   "stream"  (recommended) – O(1) memory in time; recomputes u on-the-fly.
+  #   "full"    (legacy)      – stores the full u tensor (high RAM for long runs).
+  memory_mode: "stream"
+
+  # When true the solver records u snapshots at the observation time indices.
+  # Disable to reduce memory when only loss values are needed.
+  store_u_snapshots: true
+
+# ------------------------------------------------------------------
+# Measurement locations
+# ------------------------------------------------------------------
+# ukmat  : grid-index pairs [[row, col], ...] where u is observed.
+# chkmat : grid-index pairs [[row, col], ...] where C is observed.
+# These are used for both truth extraction and loss evaluation.
+measurements:
+  ukmat:   [[5, 10], [10, 20], [15, 30], [20, 40]]
+  chkmat:  [[5, 10], [20, 40]]
+
+  # Observation time step indices (into the FD time axis)
+  ukt: [100, 200, 300, 400, 500]
+
+# ------------------------------------------------------------------
+# Run / output configuration
+# ------------------------------------------------------------------
+run:
+  results_dir: "./results"  # parent folder; each batch run creates a sub-folder here
+  save_losses: true
+  loss_file: "QAPILM_Eps_loss.npy"
+  coeffs_csv: "coeffs_batch.csv"  # summary CSV written at the end of a batch sweep

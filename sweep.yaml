@@ -1,0 +1,83 @@
+# =============================================================
+# sweep.yaml -- Batch sweep override list for QAPILM
+#
+# Each entry overrides specific fields from config.yaml for one
+# experiment run.  Keys follow the same dot-separated path as
+# in config.yaml (nested via the same YAML structure).
+#
+# To add a new sweep entry, append another "- name: ..." block.
+# Missing keys are inherited unchanged from the base config.
+# =============================================================
+
+sweeps:
+
+  # --- Sweep 1: baseline (no overrides, reproduces default run) ---
+  - name: "baseline"
+    # no overrides – uses all values from config.yaml
+
+  # --- Sweep 2: tighter epsilon → stricter data fit ---
+  - name: "eps_0.05"
+    model:
+      epsilon: 0.05     # halve the dead-zone width
+
+  # --- Sweep 3: looser epsilon → more noise-robust ---
+  - name: "eps_0.20"
+    model:
+      epsilon: 0.20
+
+  # --- Sweep 4: DCT basis instead of poly_sin ---
+  - name: "basis_dct"
+    basis:
+      type: "dct"
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 5: Legendre basis ---
+  - name: "basis_legendre"
+    basis:
+      type: "legendre"
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 6: Haar wavelet basis ---
+  - name: "basis_wavelet"
+    basis:
+      type: "wavelet"
+      wav_levels_x: 2
+      wav_levels_z: 3
+
+  # --- Sweep 7: regen fluctuation with different seed ---
+  - name: "regen_seed_42"
+    problem:
+      regen_fluc: true
+      fluc_seed: 42
+
+  # --- Sweep 8: regen fluctuation, different seed, tighter epsilon ---
+  - name: "regen_seed_42_eps_0.05"
+    problem:
+      regen_fluc: true
+      fluc_seed: 42
+    model:
+      epsilon: 0.05
+
+  # --- Sweep 9: anisotropic domain (Rcv = 0.5) ---
+  - name: "aniso_Rcv0.5"
+    problem:
+      Rcv: 0.5
+
+  # --- Sweep 10: denser measurement grid (more ukmat points) ---
+  - name: "dense_ukmat"
+    measurements:
+      ukmat:
+        - [3, 8]
+        - [5, 10]
+        - [8, 15]
+        - [10, 20]
+        - [12, 25]
+        - [15, 30]
+        - [18, 35]
+        - [20, 40]
+      chkmat:
+        - [5, 10]
+        - [10, 20]
+        - [20, 40]
