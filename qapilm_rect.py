@@ -428,6 +428,9 @@ class RectangularQAPILM:
         utens = np.zeros((numt+1, self.numv+1, self.numh+1), dtype=np.float64)
         utens[0,:,:] = u0
         udeg = np.ones(numt+1, dtype=np.float64)
+        # udeg normalisation requires a scalar reference value;
+        # when u0 is a matrix (uniform IC) take its mean.
+        u0_scalar = float(np.mean(u0)) if np.ndim(u0) > 0 else float(u0)
 
         for i in range(numt):
             cu = utens[i,:,:]
@@ -436,7 +439,7 @@ class RectangularQAPILM:
             utens[i+1,:,-1] = right * utens[i+1,:,-2]
             utens[i+1,0,:]  = top   * utens[i+1,1,:]
             utens[i+1,-1,:] = bot   * utens[i+1,-2,:]
-            udeg[i+1] = np.mean(utens[i+1]) / u0
+            udeg[i+1] = np.mean(utens[i+1]) / u0_scalar
         return utens, udeg
 
     # =========================================================

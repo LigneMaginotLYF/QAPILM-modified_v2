@@ -25,34 +25,35 @@ Adam optimiser and an ε-insensitive loss.
 | `config.yaml` | **Base configuration** – edit to change defaults for geometry, material, BCs, basis type, ε threshold, solver mode, etc. |
 | `sweep.yaml` | **Batch sweep list** – one entry per experiment run; each entry overrides selected keys from `config.yaml` |
 | `run_batch.py` | **Batch runner** – loads the two YAML files and executes all sweep entries, writing per-run results and a summary CSV |
+| `vanilla_PINN_2D_rect.py` | **PINN solver** – physics-informed neural network for joint u/C recovery; generates observations via FD forward solver, trains two networks, saves timestamped models, and plots Real / QAPILM / PINN comparisons |
 
 ---
 
 ## Dependencies
 
-Standard Python scientific stack plus **PyYAML**:
+Standard Python scientific stack plus **PyYAML** (and **PyTorch** for the PINN):
 
 ```bash
 pip install numpy scipy matplotlib seaborn pyyaml
+pip install torch          # for vanilla_PINN_2D_rect.py
 ```
 
 ---
 
-## Quick start – single run
+## Quick start – single QAPILM run
 
 ```python
 from qapilm_rect import (
     ProblemConfig, BasisConfig, ModelConfig,
     SolverConfig, RunConfig, RectangularQAPILM,
 )
-import numpy as np
 
 solver = RectangularQAPILM(
     ProblemConfig(), BasisConfig(), ModelConfig(),
     SolverConfig(), RunConfig(),
 )
-u0 = np.ones((solver.numv + 1, solver.numh + 1))
-utens, udeg = solver.forward_solver(solver.chm, solver.ilim, u0, *solver.p.bcs)
+# u0 can be a scalar or a (nz+1, nx+1) matrix; both are handled correctly
+utens, udeg = solver.forward_solver(solver.chm, solver.ilim, solver.p.u0, *solver.p.bcs)
 ```
 
 ---
@@ -185,4 +186,196 @@ computation and potential overfitting with sparse data.
   the loader in `run_batch.py` always opens YAML files with
   `encoding="utf-8"` to avoid this.  When editing YAML files in a text
   editor, ensure the file is saved as UTF-8 (without BOM).
+
+---
+
+## PINN solver (`vanilla_PINN_2D_rect.py`)
+
+`vanilla_PINN_2D_rect.py` provides a fully self-contained Physics-Informed
+Neural Network (PINN) that solves the same 2-D consolidation problem as
+`qapilm_rect.py` using PyTorch.
+
+### PDE
+
+```
+u_t = C(x,z) · u_xx + C(x,z)·Rcv · u_zz + (∂C/∂x)·u_x + Rcv·(∂C/∂z)·u_z
+```
+
+Two networks are trained jointly:
+
+| Network | Inputs | Output |
+|---------|--------|--------|
+| `UNet`  | x̄, z̄, t̄ (normalised) | u (pore pressure) |
+| `CNet`  | x̄, z̄          | C > 0 (via softplus) |
+
+### 1. Generating observations from the forward solver
+
+**Option A – use the QAPILM FD solver** (recommended when a fully
+configured QAPILM instance is available):
+
+```python
+from qapilm_rect import ProblemConfig, BasisConfig, ModelConfig, SolverConfig, RunConfig, RectangularQAPILM
+from vanilla_PINN_2D_rect import PINN2DConsolidation, PINNObsConfig
+
+# Build a QAPILM solver (ground-truth C is inside solver.chm)
+solver = RectangularQAPILM(
+    ProblemConfig(regen_fluc=True, fluc_seed=42),
+    BasisConfig(), ModelConfig(), SolverConfig(), RunConfig(),
+)
+
+pinn = PINN2DConsolidation()
+obs  = pinn.generate_observations_from_qapilm(solver)
+```
+
+**Option B – use the built-in minimal FD solver** (no external CSV files
+needed):
+
+```python
+import numpy as np
+from vanilla_PINN_2D_rect import PINN2DConsolidation, PINNGeomConfig
+
+# Any (nz+1, nx+1) positive array works as ground-truth C
+geom = PINNGeomConfig(Lh=10, Lv=5, Lt=2)
+pinn = PINN2DConsolidation(geom=geom)
+
+chm = np.ones((26, 51)) * 1.2          # uniform C (replace with real field)
+obs = pinn.generate_observations_from_fd(chm)
+```
+
+### 2. Choosing measurement density
+
+`PINNObsConfig` controls how observation locations are sampled:
+
+```python
+from vanilla_PINN_2D_rect import PINNObsConfig
+
+obs_cfg = PINNObsConfig(
+    density_mode = "grid",    # "grid" (regular sub-grid) or "random" (uniform random)
+    u_density    = 0.05,      # fraction of spatial grid points used for u obs.
+    c_density    = 0.05,      # fraction used for C obs.
+    n_time_obs   = 5,         # number of observation time instants (auto-spaced)
+
+    # Optional explicit overrides — when non-empty, density settings are ignored:
+    u_locations  = [[2, 5], [10, 20]],   # [[row, col], …]
+    c_locations  = [[0, 0], [12, 25]],
+    time_indices = [100, 200, 300],       # exact time-step indices
+)
+```
+
+### 3. Running the PINN and saving/loading timestamped models
+
+**Training from Python:**
+
+```python
+from vanilla_PINN_2D_rect import (
+    PINN2DConsolidation, PINNGeomConfig, PINNNetConfig,
+    PINNTrainConfig, PINNObsConfig, PINNSaveConfig,
+)
+
+pinn = PINN2DConsolidation(
+    geom      = PINNGeomConfig(),
+    net_cfg   = PINNNetConfig(u_hidden_layers=4, u_hidden_width=64),
+    train_cfg = PINNTrainConfig(epochs=5000, lr=1e-3),
+    obs_cfg   = PINNObsConfig(density_mode="grid", u_density=0.05),
+    save_cfg  = PINNSaveConfig(model_dir="./pinn_models"),
+)
+
+obs = pinn.generate_observations_from_fd(chm_true)
+pinn.train(obs)
+model_path = pinn.save()          # → ./pinn_models/pinn_YYYYMMDD_HHMMSS.pt
+```
+
+**Training from the command line** (uses a synthetic C field as demo):
+
+```bash
+# Quick-start with default settings (3000 epochs, built-in FD solver)
+python vanilla_PINN_2D_rect.py
+
+# Custom output directory
+python vanilla_PINN_2D_rect.py --outdir ./my_pinn_models
+
+# Custom epoch count
+python vanilla_PINN_2D_rect.py --epochs 8000
+
+# Use the full QAPILM FD solver (requires CSV fluctuation files)
+python vanilla_PINN_2D_rect.py --use-qapilm
+
+# Load a saved model and skip training
+python vanilla_PINN_2D_rect.py --load pinn_models/pinn_20250101_120000.pt
+```
+
+**Loading a previously saved model:**
+
+```python
+from vanilla_PINN_2D_rect import PINN2DConsolidation
+
+pinn = PINN2DConsolidation.load("pinn_models/pinn_20250101_120000.pt")
+# All network weights and loss histories are restored.
+```
+
+Each saved model consists of two files:
+
+```
+pinn_models/
+  pinn_20250101_120000.pt          # PyTorch checkpoint (weights + loss histories)
+  pinn_20250101_120000_meta.json   # JSON metadata (configs, final loss, n_epochs)
+```
+
+### 4. Producing comparison plots
+
+**Inline comparison plot (Real / QAPILM / PINN):**
+
+```python
+# After training or loading, call plot_comparison directly:
+pinn.plot_comparison(
+    true_C   = chm_true,       # ground-truth C field  (nz, nx)
+    qapilm_C = ch_est,         # QAPILM estimate       (nz, nx)  — pass None to omit
+    save_path = "comparison_C.png",
+    mode      = 1,             # 1 → log(Real/PINN),  0 → Real-PINN
+)
+```
+
+**Using the standalone `compare_and_plot()` helper** (minimal boilerplate,
+can load fields from `.npy` files or arrays):
+
+```python
+from vanilla_PINN_2D_rect import PINN2DConsolidation, compare_and_plot
+
+pinn = PINN2DConsolidation.load("pinn_models/pinn_20250101_120000.pt")
+
+compare_and_plot(
+    "results/baseline_20250101_120000/ch_true.npy",    # path or array
+    "results/baseline_20250101_120000/ch_est.npy",     # QAPILM estimate
+    pinn,
+    save_path = "full_comparison.png",
+)
+```
+
+The plot layout matches `RectangularQAPILM.triplot2D()`:
+
+```
+[ Real C | QAPILM C | PINN C | log(Real/PINN) ]
+```
+(the QAPILM panel is omitted when `qapilm_C=None`).
+
+**Plotting loss history:**
+
+```python
+pinn.plot_loss_history(save_path="loss_history.png")
+```
+
+### PINN config reference
+
+| Class | Key parameters |
+|-------|---------------|
+| `PINNGeomConfig` | `Lh`, `Lv`, `Lt`, `u0`, `Rcv`, `bcs` |
+| `PINNNetConfig`  | `u_hidden_layers`, `u_hidden_width`, `c_hidden_layers`, `c_hidden_width`, `activation`, `use_mixed_formulation` |
+| `PINNTrainConfig`| `epochs`, `lr`, `lr_decay`, `w_pde`, `w_bc`, `w_ic`, `w_data_u`, `w_data_c`, `n_colloc_pde` |
+| `PINNObsConfig`  | `density_mode`, `u_density`, `c_density`, `u_locations`, `c_locations`, `time_indices`, `n_time_obs` |
+| `PINNSaveConfig` | `model_dir`, `save_metadata` |
+
+> **Mixed formulation** (`PINNNetConfig.use_mixed_formulation = True`):
+> Introduces auxiliary networks for u_x and u_z so the PDE residual only
+> requires first-order autograd, reducing training time by 2–5 ×.  Enable
+> for large grids or long training runs.
 
