@@ -240,13 +240,17 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
             coefe = solver.inverse_solver_stream(
                 ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk
             )
+        elif sconf.memory_mode == "full":
+            coefe = solver.inverse_solver_full(
+                ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk
+            )
         else:
             warnings.warn(
-                f"memory_mode='{sconf.memory_mode}' is not yet implemented; "
-                "falling back to memory_mode='stream'.",
+                f"Unknown memory_mode='{sconf.memory_mode}'; "
+                "falling back to memory_mode='full' for backward compatibility.",
                 stacklevel=2,
             )
-            coefe = solver.inverse_solver_stream(
+            coefe = solver.inverse_solver_full(
                 ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk
             )
 

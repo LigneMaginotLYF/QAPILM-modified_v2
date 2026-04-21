@@ -102,9 +102,9 @@ model:
 # ------------------------------------------------------------------
 solver:
   # memory_mode controls which solver variant is used:
-  #   "stream"  (recommended) – O(1) memory in time; recomputes u on-the-fly.
-  #   "full"    (legacy)      – stores the full u tensor (high RAM for long runs).
-  memory_mode: "stream"
+  #   "full"    (legacy default) – stores full time history (high RAM).
+  #   "stream"  (memory-optimized) – O(1) memory in time.
+  memory_mode: "full"
 
   # When true the solver records u snapshots at the observation time indices.
   # Disable to reduce memory when only loss values are needed.
