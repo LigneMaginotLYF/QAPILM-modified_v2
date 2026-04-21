@@ -81,3 +81,15 @@ sweeps:
         - [5, 10]
         - [10, 20]
         - [20, 40]
+
+  # --- Sweep 11: Monte Carlo UQ (10 restarts, default epsilon) ---
+  - name: "mc_10"
+    monte_carlo:
+      N_mc: 10
+
+  # --- Sweep 12: Monte Carlo UQ, tight epsilon ---
+  - name: "mc_10_eps_0.05"
+    monte_carlo:
+      N_mc: 10
+    model:
+      epsilon: 0.05

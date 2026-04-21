@@ -112,6 +112,17 @@ measurements:
   ukt: [100, 200, 300, 400, 500]
 
 # ------------------------------------------------------------------
+# Monte Carlo configuration
+# ------------------------------------------------------------------
+monte_carlo:
+  # Number of Monte Carlo restarts for the inverse solver.
+  # Each restart uses independent random initial coefficients.
+  # N_mc = 1 (default) reproduces the original single-run behaviour.
+  # For N_mc > 1: mean C and mean U fields are saved/plotted; all
+  # per-run weight vectors are stored in mc_weights.npy for UQ.
+  N_mc: 1
+
+# ------------------------------------------------------------------
 # Run / output configuration
 # ------------------------------------------------------------------
 run:

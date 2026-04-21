@@ -54,8 +54,8 @@ from qapilm_rect import (
 # ===========================================================================
 
 def _load_yaml(path: str) -> dict:
-    """Load a YAML file and return its contents as a dict."""
-    with open(path, "r") as fh:
+    """Load a YAML file and return its contents as a dict (UTF-8 encoding)."""
+    with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
 
@@ -156,6 +156,12 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     """
     Execute one experiment described by *cfg* (already merged base+override).
 
+    Supports N_mc Monte Carlo runs: the inverse solver is restarted N_mc times
+    with independent random initial coefficients.  Mean C and mean U fields are
+    computed by decoding each run's weight vector and averaging in field space
+    (weights are never averaged).  When N_mc == 1 the behaviour is identical to
+    the original single-run output.
+
     Parameters
     ----------
     cfg               : merged configuration dict
@@ -168,8 +174,12 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     run_dir = os.path.join(base_results_dir, f"{run_name}_{timestamp}")
     os.makedirs(run_dir, exist_ok=True)
 
+    # Number of Monte Carlo restarts (default 1 → original single-run behaviour)
+    N_mc = max(1, int(cfg.get("monte_carlo", {}).get("N_mc", 1)))
+
     print(f"\n{'='*70}")
     print(f"  Starting run: {run_name}  →  {run_dir}")
+    print(f"  Monte Carlo N_mc = {N_mc}")
     print(f"{'='*70}")
 
     # Build dataclass configs
@@ -177,6 +187,7 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
 
     # Redirect per-run outputs into run_dir
     rconf.results_dir = run_dir
+    # loss_file will be set per MC run inside the loop below
     rconf.loss_file   = os.path.join(run_dir, "QAPILM_Eps_loss.npy")
 
     # Convert measurement lists to numpy arrays / index tuples as expected by solver
@@ -191,7 +202,7 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
 
     # ------------------------------------------------------------------
-    # Generate "ground truth" snapshot tensor via forward solver
+    # Generate "ground truth" snapshot tensor via forward solver (once)
     # ------------------------------------------------------------------
     top, bot, left, right = pconf.bcs
     u0_mat = np.ones((solver.numv + 1, solver.numh + 1)) * pconf.u0
@@ -200,61 +211,113 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     print(f"  Running forward solver  (numt={numt}) …")
     utens, udeg = solver.forward_solver(solver.chm, numt, u0_mat, top, bot, left, right)
 
-    # ------------------------------------------------------------------
-    # Extract observations at the requested time steps
-    # ------------------------------------------------------------------
     # Clamp ukt indices to valid range
     ukt_arr = np.clip(ukt_arr, 0, numt)
 
-    uk  = utens[ukt_arr, :, :]          # shape: (T, numv+1, numh+1)
-    chk = solver.chm                    # ground-truth permeability field
+    uk  = utens[ukt_arr, :, :]   # shape: (T, numv+1, numh+1)
+    chk = solver.chm              # ground-truth permeability field
 
     # ------------------------------------------------------------------
-    # Run inverse solver (streaming, memory-optimised by default)
-    # ------------------------------------------------------------------
-    print(f"  Running inverse solver  (epochs={mconf.itol}, ε={mconf.epsilon}) …")
-    if sconf.memory_mode == "stream":
-        coefe = solver.inverse_solver_stream(ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk)
-    else:
-        # "full" mode is not yet implemented in qapilm_rect.py; fall back to
-        # the memory-optimised stream solver and notify the caller.
-        warnings.warn(
-            f"memory_mode='{sconf.memory_mode}' is not yet implemented; "
-            "falling back to memory_mode='stream'.",
-            stacklevel=2,
-        )
-        coefe = solver.inverse_solver_stream(ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk)
-
-    # ------------------------------------------------------------------
-    # Reconstruct estimated C field and save outputs
+    # Monte Carlo inverse loop
     # ------------------------------------------------------------------
     from qapilm_rect import softplus
-    m_est  = solver.vec2mat2(solver.basese @ coefe)
-    ch_est = softplus(m_est)
 
-    np.save(os.path.join(run_dir, "coefe.npy"),  coefe)
-    np.save(os.path.join(run_dir, "ch_est.npy"), ch_est)
-    np.save(os.path.join(run_dir, "ch_true.npy"), solver.chm)
+    all_coefe  = []   # list of (nb,) arrays
+    all_ch_est = []   # list of (numv+1, numh+1) C fields
+    all_u_est  = []   # list of (numv+1, numh+1) U snapshots at ukt_arr[-1]
 
-    # Save comparison plots (preserved output format)
+    for mc_idx in range(N_mc):
+        mc_label = f"MC {mc_idx + 1}/{N_mc}"
+        print(f"  [{mc_label}] Running inverse solver  (epochs={mconf.itol}, ε={mconf.epsilon}) …")
+
+        # Assign a per-run loss file; for N_mc == 1 keep the original name
+        if N_mc == 1:
+            rconf.loss_file = os.path.join(run_dir, "QAPILM_Eps_loss.npy")
+        else:
+            rconf.loss_file = os.path.join(run_dir, f"QAPILM_Eps_loss_mc{mc_idx:03d}.npy")
+
+        if sconf.memory_mode == "stream":
+            coefe = solver.inverse_solver_stream(
+                ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk
+            )
+        else:
+            warnings.warn(
+                f"memory_mode='{sconf.memory_mode}' is not yet implemented; "
+                "falling back to memory_mode='stream'.",
+                stacklevel=2,
+            )
+            coefe = solver.inverse_solver_stream(
+                ukt_arr, u0_mat, ukmat_idx, chkmat_idx, uk, chk
+            )
+
+        # Decode weight vector → C field
+        m_est  = solver.vec2mat2(solver.basese @ coefe)
+        ch_est = softplus(m_est)
+
+        # Run forward solver with estimated C to obtain estimated U field.
+        # Pass u0 as a scalar so forward_solver's udeg computation is safe.
+        utens_est, _ = solver.forward_solver(ch_est, numt, pconf.u0, top, bot, left, right)
+        # U snapshot at the last observation time
+        u_est_snap = utens_est[ukt_arr[-1]].copy()
+
+        all_coefe.append(coefe.copy())
+        all_ch_est.append(ch_est)
+        all_u_est.append(u_est_snap)
+
+        print(f"  [{mc_label}] done")
+
+    # After the loop rconf.loss_file points to the last MC run's loss file.
+    # final_loss below reflects only that last iteration (representative scalar for CSV).
+
+    # ------------------------------------------------------------------
+    # Aggregate: mean fields (fields are averaged, not weight vectors)
+    # ------------------------------------------------------------------
+    mc_weights  = np.array(all_coefe)                    # (N_mc, nb)
+    mean_ch_est = np.mean(np.array(all_ch_est), axis=0)  # (numv+1, numh+1)
+    mean_u_est  = np.mean(np.array(all_u_est),  axis=0)  # (numv+1, numh+1)
+
+    # ------------------------------------------------------------------
+    # Save outputs
+    # ------------------------------------------------------------------
+    # Per-run weight vectors (all MC runs)
+    np.save(os.path.join(run_dir, "mc_weights.npy"), mc_weights)
+    # Mean C field (replaces single-run ch_est.npy)
+    np.save(os.path.join(run_dir, "ch_est.npy"),     mean_ch_est)
+    # Mean U field at last observation time
+    np.save(os.path.join(run_dir, "u_mean_est.npy"), mean_u_est)
+    # Ground-truth C field
+    np.save(os.path.join(run_dir, "ch_true.npy"),    solver.chm)
+
+    # Backward compat: for N_mc == 1 also write the original coefe.npy
+    if N_mc == 1:
+        np.save(os.path.join(run_dir, "coefe.npy"), mc_weights[0])
+
+    # Save comparison plot (preserved output format; contents = mean C field)
     plot_path = os.path.join(run_dir, "triplot_C.png")
+    c_title = "C estimated" if N_mc == 1 else "C estimated (mean)"
     solver.triplot2D(
-        solver.chm, ch_est,
-        titles=["C truth", "C estimated", "log(truth/est)"],
+        solver.chm, mean_ch_est,
+        titles=["C truth", c_title, "log(truth/est)"],
         mode=1,
         psavepath=plot_path,
     )
     print(f"  Saved comparison plot → {plot_path}")
 
     # ------------------------------------------------------------------
-    # Compute key metrics
+    # Compute key metrics (based on mean C field)
     # ------------------------------------------------------------------
-    cos_s = float(np.dot(solver.chm.flatten(), ch_est.flatten()) /
-                  (np.linalg.norm(solver.chm.flatten()) * np.linalg.norm(ch_est.flatten())))
-    rmse  = float(np.sqrt(np.mean((solver.chm - ch_est) ** 2)))
-    max_err = float(np.max(np.abs(solver.chm - ch_est)))
+    cos_s = float(
+        np.dot(solver.chm.flatten(), mean_ch_est.flatten()) /
+        (np.linalg.norm(solver.chm.flatten()) * np.linalg.norm(mean_ch_est.flatten()))
+    )
+    rmse    = float(np.sqrt(np.mean((solver.chm - mean_ch_est) ** 2)))
+    max_err = float(np.max(np.abs(solver.chm - mean_ch_est)))
 
-    final_loss = float(np.load(rconf.loss_file)[-1]) if rconf.save_losses and os.path.exists(rconf.loss_file) else float("nan")
+    final_loss = (
+        float(np.load(rconf.loss_file)[-1])
+        if rconf.save_losses and os.path.exists(rconf.loss_file)
+        else float("nan")
+    )
 
     print(f"  cos_sim={cos_s:.4f}  RMSE={rmse:.4f}  max_err={max_err:.4f}  final_loss={final_loss:.6f}")
 
@@ -264,6 +327,7 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     row = {
         "run_name":   run_name,
         "run_dir":    run_dir,
+        "N_mc":       N_mc,
         "basis_type": bconf.type,
         "epsilon":    mconf.epsilon,
         "regen_fluc": pconf.regen_fluc,
@@ -273,8 +337,10 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         "cos_sim":    cos_s,
         "RMSE":       rmse,
         "max_err":    max_err,
-        **{f"coef_{i}": float(v) for i, v in enumerate(coefe)},
     }
+    # Include per-coef columns only for N_mc == 1 (backward compat)
+    if N_mc == 1:
+        row.update({f"coef_{i}": float(v) for i, v in enumerate(mc_weights[0])})
 
     file_exists = os.path.exists(coeffs_csv_path)
     with open(coeffs_csv_path, "a", newline="") as fh:
