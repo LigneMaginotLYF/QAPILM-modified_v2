@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.sparse import diags
+from scipy.interpolate import BSpline
 import matplotlib.colors as colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -366,7 +367,6 @@ class BasisFactory:
         *degree* (default 3 = cubic).  Returns an array of length
         n_knots + degree + 1.
         """
-        from scipy.interpolate import BSpline
         n_int = n_knots
         knots_int = np.linspace(0.0, 1.0, n_int + 2)[1:-1]  # interior knots
         t = np.concatenate(
