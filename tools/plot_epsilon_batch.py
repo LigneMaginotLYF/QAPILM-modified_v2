@@ -239,7 +239,7 @@ def plot_c_xsec(runs_data, labels, idx: int, axis: str,
             m   = mean[:, col_i]
             s   = std[:, col_i]
             xlabel = "z (m)"
-            phys   = f"x = {idx * lh / max(nh, 1):.2f} m"
+            location_label = f"x = {idx * lh / max(nh, 1):.2f} m"
             # ground truth (same for all runs → plot once)
             if not truth_plotted and "ch_true" in data:
                 ax.plot(xs, data["ch_true"][:, col_i],
@@ -251,7 +251,7 @@ def plot_c_xsec(runs_data, labels, idx: int, axis: str,
             m   = mean[row_i, :]
             s   = std[row_i, :]
             xlabel = "x (m)"
-            phys   = f"z = {idx * lv / max(nv, 1):.2f} m"
+            location_label = f"z = {idx * lv / max(nv, 1):.2f} m"
             if not truth_plotted and "ch_true" in data:
                 ax.plot(xs, data["ch_true"][row_i, :],
                         "k--", lw=LINE_WIDTH, label="Ground truth", zorder=3)
@@ -260,7 +260,7 @@ def plot_c_xsec(runs_data, labels, idx: int, axis: str,
         ax.plot(xs, m, color=col, lw=LINE_WIDTH, label=lbl, zorder=2)
         ax.fill_between(xs, m - s, m + s, color=col, alpha=CONFIDENCE_ALPHA)
 
-    _set_axis_labels(ax, xlabel, r"$C$  (m²/year)", f"C field — {phys}")
+    _set_axis_labels(ax, xlabel, r"$C$  (m²/year)", f"C field — {location_label}")
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=DPI, bbox_inches="tight")
