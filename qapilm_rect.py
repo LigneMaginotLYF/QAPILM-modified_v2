@@ -81,8 +81,8 @@ class ModelConfig:
 
 @dataclass
 class SolverConfig:
-    # memory mode: "stream" (recommended) or "full" (legacy)
-    memory_mode: str = "stream"
+    # memory mode: "full" (legacy default) or "stream" (memory-optimized)
+    memory_mode: str = "full"
     # store snapshots for u(t) only at ukt indices
     store_u_snapshots: bool = True
 
@@ -640,6 +640,117 @@ class RectangularQAPILM:
 
         print('final loss=', loss_t)
         return coefe
+
+    # =========================================================
+    # Inverse: full history (legacy, memory-heavy)
+    # =========================================================
+    def inverse_solver_full(self, ukt, u0, ukmat, chkmat, uk, chk, wlst=None):
+        top, bot, left, right = self.p.bcs
+        nb = len(self.basese[0])
+
+        coefe = np.random.randn(nb) * 0.2
+        print('random init:', coefe)
+
+        losses = []
+        beta1, beta2 = 0.9, 0.999
+        mvec = np.zeros(nb)
+        vvec = np.zeros(nb)
+
+        tmax = int(ukt[-1])
+        t_set = set(ukt.tolist())
+
+        for j in range(self.m.itol):
+            m = self.vec2mat2(self.basese @ coefe)
+            chem = softplus(m)
+            chev = chem * self.p.Rcv
+            dcm = dsoftplus(m)
+            dcv = dcm * self.p.Rcv
+            ddcm = dcm * (1-dcm)
+            ddcv = ddcm * self.p.Rcv
+
+            trendedx = self.vec2mat2(self.basesedx @ coefe)
+            trendedz = self.vec2mat2(self.basesedz @ coefe)
+            d1e = dcm * trendedx
+            d2e = dcv * trendedz
+
+            # full time history (legacy behavior; memory-heavy by design)
+            u_hist = np.zeros((tmax + 1, self.numv+1, self.numh+1), dtype=np.float64)
+            u_hist[0,:,:] = u0
+            s_hist = np.zeros((tmax + 1, self.numv+1, self.numh+1, nb), dtype=np.float64)
+
+            loss_t = 0.0
+            gradients = np.zeros(nb)
+
+            for i in range(tmax):
+                cu = u_hist[i,:,:]
+                un = cu + chem*((self.a1.T.dot(cu.T)).T) + chev*(self.a2.dot(cu)) + d1e*((self.b1.T.dot(cu.T)).T) + d2e*(self.b2.dot(cu))
+                un[:,0]  = left  * un[:,1]
+                un[:,-1] = right * un[:,-2]
+                un[0,:]  = top   * un[1,:]
+                un[-1,:] = bot   * un[-2,:]
+                u_hist[i+1,:,:] = un
+
+                # update sensitivities for each basis (with full time history)
+                for k in range(nb):
+                    bk = self.vec2mat2(self.basese[:,k])
+                    bdxk = self.vec2mat2(self.basesedx[:,k])
+                    bdzk = self.vec2mat2(self.basesedz[:,k])
+                    chdk = dcm * bk
+                    cvdk = chdk * self.p.Rcv
+                    d1dk = ddcm * bk * trendedx + bdxk * dcm
+                    d2dk = ddcv * bk * trendedz + bdzk * dcv
+
+                    csk = s_hist[i,:,:,k]
+                    sn = csk + chdk*((self.a1.T.dot(cu.T)).T) + chem*((self.a1.T.dot(csk.T)).T) + \
+                         cvdk*(self.a2.dot(cu)) + chev*(self.a2.dot(csk)) + \
+                         d1dk*((self.b1.T.dot(cu.T)).T) + d1e*((self.b1.T.dot(csk.T)).T) + \
+                         d2dk*(self.b2.dot(cu)) + d2e*(self.b2.dot(csk))
+                    sn[:,0]  = left  * sn[:,1]
+                    sn[:,-1] = right * sn[:,-2]
+                    sn[0,:]  = top   * sn[1,:]
+                    sn[-1,:] = bot   * sn[-2,:]
+                    s_hist[i+1,:,:,k] = sn
+
+                # preserve existing time-index matching semantics
+                if i in t_set:
+                    idx = np.where(ukt == i)[0][0]
+                    for pt in ukmat:
+                        uiloss, uigrad = epsilon_insensitive_loss_numpy(u_hist[i+1, pt[0], pt[1]], uk[idx, pt[0], pt[1]], self.m.epsilon)
+                        loss_t += np.mean(uiloss) * self.m.lamu
+                        for k in range(nb):
+                            gradients[k] += np.mean(uigrad * s_hist[i+1, pt[0], pt[1], k]) * self.m.lamu
+
+            # permeability loss
+            for pt in chkmat:
+                ciloss, cigrad = epsilon_insensitive_loss_numpy(chem[pt[0], pt[1]], chk[pt[0], pt[1]], self.m.epsilon)
+                loss_t += self.m.lam * np.mean(ciloss) * (1 + self.p.Rcv)
+                for k in range(nb):
+                    gradients[k] += self.m.lam * np.mean(cigrad * chem * self.vec2mat2(self.basese[:,k])[pt[0], pt[1]]) * (1 + self.p.Rcv)
+
+            losses.append(loss_t)
+            if j % 10 == 0:
+                print('Epoch', j, ': Loss=', loss_t, '; gradients=', gradients)
+
+            mvec = mvec*beta1 + (1-beta1)*gradients
+            vvec = vvec*beta2 + (1-beta2)*(gradients**2)
+            mhat = mvec / (1-beta1**(j+1))
+            vhat = vvec / (1-beta2**(j+1))
+            update = mhat / (np.sqrt(vhat)+1e-11)
+            coefe -= self.m.lr * update
+
+            if loss_t <= self.m.ltol or np.sum(update**2) <= self.m.gtol:
+                print('Early-stopped at epoch', j)
+                break
+
+        if self.r.save_losses:
+            np.save(self.r.loss_file, losses)
+
+        print('final loss=', loss_t)
+        return coefe
+
+    # Backward-compatible API name retained for external callers.
+    def inverse_solver(self, ukt, u0, ukmat, chkmat, uk, chk, wlst=None):
+        return self.inverse_solver_full(ukt, u0, ukmat, chkmat, uk, chk, wlst=wlst)
 
     # =========================================================
     # plotting/output (format retained)

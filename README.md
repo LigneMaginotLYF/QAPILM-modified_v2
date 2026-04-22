@@ -73,7 +73,7 @@ inline.  The most important options are:
 | `problem.bcs` | Boundary conditions `[top, bot, left, right]` (0 = Dirichlet, 1 = Neumann) |
 | `basis.type` | Basis type: `poly` · `sin` · `dct` · `legendre` · `wavelet` (solo) or any duo like `poly+sin` · `dct+legendre` · `poly+wavelet`, etc. |
 | `model.epsilon` | ε-insensitive loss threshold (relative to observation magnitude) |
-| `solver.memory_mode` | `stream` (default, memory-optimised) or `full` (legacy) |
+| `solver.memory_mode` | `full` (legacy default) or `stream` (memory-optimised) |
 | `solver.store_u_snapshots` | Whether to keep `u` snapshots during the inverse solve |
 | `measurements.ukmat` / `chkmat` | Grid-index pairs `[row, col]` for `u` / `C` observations |
 | `measurements.ukt` | Time-step indices at which `u` is observed |
@@ -198,8 +198,8 @@ computation and potential overfitting with sparse data.
   produced by `qapilm_rect.py` are preserved unchanged.  When `N_mc == 1`
   the output folder is byte-for-byte identical to the original single-run
   output (plus the new `mc_weights.npy` file).
-- **Memory**: `solver.memory_mode: stream` (default) uses O(1) memory in
-  the time dimension; switch to `full` only if you need the full `u` tensor.
+- **Memory**: `solver.memory_mode: full` is the backward-compatible default.
+  Use `stream` to reduce memory to O(1) in the time dimension.
 - **Reproducibility**: set `regen_fluc: true` and fix `fluc_seed` for
   deterministic runs independent of the legacy CSV files.
 - **Monte Carlo UQ**: set `monte_carlo.N_mc` to a value greater than 1 to
@@ -409,4 +409,3 @@ pinn.plot_loss_history(save_path="loss_history.png")
 > Introduces auxiliary networks for u_x and u_z so the PDE residual only
 > requires first-order autograd, reducing training time by 2–5 ×.  Enable
 > for large grids or long training runs.
-
