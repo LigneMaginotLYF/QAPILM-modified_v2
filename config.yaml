@@ -142,3 +142,37 @@ run:
   save_losses: true
   loss_file: "QAPILM_Eps_loss.npy"
   coeffs_csv: "coeffs_batch.csv"  # summary CSV written at the end of a batch sweep
+
+# ------------------------------------------------------------------
+# Randomize option
+# ------------------------------------------------------------------
+# Controls optional randomization applied before each experiment run.
+# Default mode is "none" (backward compatible, no randomization).
+#
+# mode: "none"      – no randomization (default)
+#       "coeft"     – replace ground-truth trend coefficients with N(0,1)
+#                     random values (same number of coefficients preserved)
+#       "locations" – replace ukmat / chkmat with random grid positions
+#                     (same number of measurement points preserved)
+# seed: integer seed for reproducibility; 0 = leave the RNG unseeded
+# ------------------------------------------------------------------
+randomize:
+  mode: "none"
+  seed: 0
+
+# ------------------------------------------------------------------
+# Plot-output configuration
+# ------------------------------------------------------------------
+# Controls additional output files written by run_batch.py that are
+# needed by the batch plotting scripts in tools/.
+#
+# snapshot_years  : list of physical times (in years) at which U field
+#                   snapshots are saved for each MC run.
+# monitor_points  : list of [row, col] grid-index pairs at which U temporal
+#                   evolution is tracked across all time steps.
+# ------------------------------------------------------------------
+plot_output:
+  snapshot_years: [0.1, 1.0, 2.0]
+  monitor_points:
+    - [10, 25]
+    - [5, 10]
