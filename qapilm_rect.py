@@ -46,26 +46,35 @@ class BasisConfig:
     # Basis type – one of the solo names or a duo joined with "+":
     #
     #  Solo (clean, no forced poly prefix):
-    #    "poly"     – 6-term 2D polynomial  [1, x, z, x², z², xz]
-    #    "sin"      – sine harmonics  [sin(2^k x), sin(2^k z)]
-    #    "dct"      – discrete cosine  [cos(π k x), cos(π k z)]
-    #    "legendre" – Legendre polynomials  [P_k(x), P_k(z)]
-    #    "wavelet"  – Haar wavelets
+    #    "poly"      – 6-term 2D polynomial  [1, x, z, x², z², xz]
+    #    "sin"       – sine harmonics  [sin(2^k x), sin(2^k z)]
+    #    "dct"       – discrete cosine  [cos(π k x), cos(π k z)]
+    #    "legendre"  – Legendre polynomials  [P_k(x), P_k(z)]
+    #    "chebyshev" – Chebyshev polynomials of the first kind  [T_k(x), T_k(z)]
+    #    "wavelet"   – Haar wavelets
+    #    "rbf"       – 1-D Gaussian RBFs along x and z separately
+    #    "bspline"   – uniform cubic B-splines along x and z separately
     #
     #  Duo (any two components separated by "+"):
-    #    "poly+sin", "poly+dct", "poly+legendre", "poly+wavelet",
-    #    "sin+dct",  "sin+legendre", "sin+wavelet",
-    #    "dct+legendre", "dct+wavelet", "legendre+wavelet"
+    #    e.g. "poly+sin", "poly+chebyshev", "rbf+bspline", etc.
     #
     #  Backward-compatible alias:
     #    "poly_sin"  →  treated as "poly+sin"
     type: str = "poly+sin"
-    # Number of sine/DCT/Legendre terms per axis (used by sin, dct, legendre)
+    # Number of sine/DCT/Legendre/Chebyshev terms per axis
     orderx: int = 1
     orderz: int = 3
     # Haar wavelet decomposition levels (used by wavelet)
     wav_levels_x: int = 2
     wav_levels_z: int = 2
+    # RBF: number of Gaussian RBF centres per axis and shape parameter
+    rbf_centers_x: int = 5
+    rbf_centers_z: int = 5
+    rbf_shape: float = 1.0
+    # B-spline: number of interior knots per axis and polynomial degree
+    bspline_nknots_x: int = 6
+    bspline_nknots_z: int = 6
+    bspline_degree: int = 3
 
 
 @dataclass
@@ -174,7 +183,7 @@ def cos_sim(tenA, tenB):
 # ============================================================
 
 # Valid solo component names.
-_VALID_COMPONENTS = frozenset(["poly", "sin", "dct", "legendre", "wavelet"])
+_VALID_COMPONENTS = frozenset(["poly", "sin", "dct", "legendre", "chebyshev", "wavelet", "rbf", "bspline"])
 
 # Backward-compatible aliases: old name → new canonical "+"-separated string.
 _BASIS_ALIASES = {
@@ -318,6 +327,67 @@ class BasisFactory:
     def _haar_size(self, levels):
         return 1 + sum(2**lev for lev in range(1, levels + 1))
 
+    # ---- Chebyshev polynomials of the first kind ---------------------
+    def _chebyshev_val(self, x_norm, order):
+        xm = 2.0 * x_norm - 1.0   # map [0,1] → [-1,1]
+        vals = []
+        for deg in range(order):
+            coeff = np.zeros(deg + 1)
+            coeff[-1] = 1.0
+            vals.append(float(np.polynomial.chebyshev.chebval(xm, coeff)))
+        return np.array(vals)
+
+    def _chebyshev_dval(self, x_norm, order, L):
+        eps = 1e-6
+        return (
+            self._chebyshev_val(x_norm + eps, order)
+            - self._chebyshev_val(x_norm - eps, order)
+        ) / (2.0 * eps * L)
+
+    # ---- Gaussian RBF (1-D centres along each axis) -----------------
+    def _rbf_val(self, x_norm, n_centers, shape):
+        """Gaussian RBF values at x_norm ∈ [0,1] for n_centers equi-spaced centres."""
+        centers = np.linspace(0.0, 1.0, n_centers)
+        r2 = (x_norm - centers) ** 2
+        return np.exp(-(shape ** 2) * r2)
+
+    def _rbf_dval(self, x_norm, n_centers, shape, L):
+        """Derivative of Gaussian RBFs w.r.t. the physical coordinate (length L)."""
+        centers = np.linspace(0.0, 1.0, n_centers)
+        r = x_norm - centers
+        r2 = r ** 2
+        return -2.0 * (shape ** 2) * r * np.exp(-(shape ** 2) * r2) / L
+
+    # ---- Uniform cubic B-splines (1-D) --------------------------------
+    def _bspline_basis(self, x_norm, n_knots, degree):
+        """Evaluate all B-spline basis functions at x_norm ∈ [0,1].
+
+        Uses a clamped uniform knot vector with *n_knots* interior knots and
+        *degree* (default 3 = cubic).  Returns an array of length
+        n_knots + degree + 1.
+        """
+        from scipy.interpolate import BSpline
+        n_int = n_knots
+        knots_int = np.linspace(0.0, 1.0, n_int + 2)[1:-1]  # interior knots
+        t = np.concatenate(
+            [np.zeros(degree + 1), knots_int, np.ones(degree + 1)]
+        )
+        n_basis = len(t) - degree - 1
+        coeff_matrix = np.eye(n_basis)
+        vals = np.array([
+            BSpline(t, coeff_matrix[i], degree)(x_norm)
+            for i in range(n_basis)
+        ])
+        return vals
+
+    def _bspline_dbasis(self, x_norm, n_knots, degree, L):
+        """Derivative of B-spline basis functions w.r.t. the physical coordinate."""
+        eps = 1e-6
+        hi = self._bspline_basis(min(x_norm + eps, 1.0), n_knots, degree)
+        lo = self._bspline_basis(max(x_norm - eps, 0.0), n_knots, degree)
+        return (hi - lo) / (2.0 * eps * L)
+
+
     # ------------------------------------------------------------------
     # Component dispatchers  (val / dx / dz for a named component)
     # ------------------------------------------------------------------
@@ -334,10 +404,25 @@ class BasisFactory:
                 self._legendre_val(x, self.b.orderx),
                 self._legendre_val(z, self.b.orderz),
             ])
+        if name == "chebyshev":
+            return np.concatenate([
+                self._chebyshev_val(x, self.b.orderx),
+                self._chebyshev_val(z, self.b.orderz),
+            ])
         if name == "wavelet":
             return np.concatenate([
                 self._haar_val(x, self.b.wav_levels_x),
                 self._haar_val(z, self.b.wav_levels_z),
+            ])
+        if name == "rbf":
+            return np.concatenate([
+                self._rbf_val(x, self.b.rbf_centers_x, self.b.rbf_shape),
+                self._rbf_val(z, self.b.rbf_centers_z, self.b.rbf_shape),
+            ])
+        if name == "bspline":
+            return np.concatenate([
+                self._bspline_basis(x, self.b.bspline_nknots_x, self.b.bspline_degree),
+                self._bspline_basis(z, self.b.bspline_nknots_z, self.b.bspline_degree),
             ])
         raise ValueError(f"Unknown component: {name!r}")
 
@@ -360,12 +445,28 @@ class BasisFactory:
                 self._legendre_dval(x, self.b.orderx, self.p.Lh),
                 np.zeros(self.b.orderz),
             ])
+        if name == "chebyshev":
+            return np.concatenate([
+                self._chebyshev_dval(x, self.b.orderx, self.p.Lh),
+                np.zeros(self.b.orderz),
+            ])
         if name == "wavelet":
             # Haar wavelets are piecewise-constant → derivative ≈ 0
             return np.zeros(
                 self._haar_size(self.b.wav_levels_x)
                 + self._haar_size(self.b.wav_levels_z)
             )
+        if name == "rbf":
+            return np.concatenate([
+                self._rbf_dval(x, self.b.rbf_centers_x, self.b.rbf_shape, self.p.Lh),
+                np.zeros(self.b.rbf_centers_z),
+            ])
+        if name == "bspline":
+            n_basis_z = self.b.bspline_nknots_z + self.b.bspline_degree + 1
+            return np.concatenate([
+                self._bspline_dbasis(x, self.b.bspline_nknots_x, self.b.bspline_degree, self.p.Lh),
+                np.zeros(n_basis_z),
+            ])
         raise ValueError(f"Unknown component: {name!r}")
 
     def _comp_dz(self, name, x, z):
@@ -387,11 +488,27 @@ class BasisFactory:
                 np.zeros(self.b.orderx),
                 self._legendre_dval(z, self.b.orderz, self.p.Lv),
             ])
+        if name == "chebyshev":
+            return np.concatenate([
+                np.zeros(self.b.orderx),
+                self._chebyshev_dval(z, self.b.orderz, self.p.Lv),
+            ])
         if name == "wavelet":
             return np.zeros(
                 self._haar_size(self.b.wav_levels_x)
                 + self._haar_size(self.b.wav_levels_z)
             )
+        if name == "rbf":
+            return np.concatenate([
+                np.zeros(self.b.rbf_centers_x),
+                self._rbf_dval(z, self.b.rbf_centers_z, self.b.rbf_shape, self.p.Lv),
+            ])
+        if name == "bspline":
+            n_basis_x = self.b.bspline_nknots_x + self.b.bspline_degree + 1
+            return np.concatenate([
+                np.zeros(n_basis_x),
+                self._bspline_dbasis(z, self.b.bspline_nknots_z, self.b.bspline_degree, self.p.Lv),
+            ])
         raise ValueError(f"Unknown component: {name!r}")
 
     # ------------------------------------------------------------------

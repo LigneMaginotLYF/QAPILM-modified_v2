@@ -110,11 +110,17 @@ def _cfg_to_dataclasses(cfg: dict):
 
     # BasisConfig
     bconf = BasisConfig(
-        type         = str(b_raw.get("type",         BasisConfig.type)),
-        orderx       = int(b_raw.get("orderx",       BasisConfig.orderx)),
-        orderz       = int(b_raw.get("orderz",       BasisConfig.orderz)),
-        wav_levels_x = int(b_raw.get("wav_levels_x", BasisConfig.wav_levels_x)),
-        wav_levels_z = int(b_raw.get("wav_levels_z", BasisConfig.wav_levels_z)),
+        type            = str(b_raw.get("type",            BasisConfig.type)),
+        orderx          = int(b_raw.get("orderx",          BasisConfig.orderx)),
+        orderz          = int(b_raw.get("orderz",          BasisConfig.orderz)),
+        wav_levels_x    = int(b_raw.get("wav_levels_x",    BasisConfig.wav_levels_x)),
+        wav_levels_z    = int(b_raw.get("wav_levels_z",    BasisConfig.wav_levels_z)),
+        rbf_centers_x   = int(b_raw.get("rbf_centers_x",   BasisConfig.rbf_centers_x)),
+        rbf_centers_z   = int(b_raw.get("rbf_centers_z",   BasisConfig.rbf_centers_z)),
+        rbf_shape       = float(b_raw.get("rbf_shape",      BasisConfig.rbf_shape)),
+        bspline_nknots_x = int(b_raw.get("bspline_nknots_x", BasisConfig.bspline_nknots_x)),
+        bspline_nknots_z = int(b_raw.get("bspline_nknots_z", BasisConfig.bspline_nknots_z)),
+        bspline_degree   = int(b_raw.get("bspline_degree",   BasisConfig.bspline_degree)),
     )
 
     # ModelConfig

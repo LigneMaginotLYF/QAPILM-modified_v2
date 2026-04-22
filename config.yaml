@@ -58,28 +58,44 @@ basis:
   # Use a solo name or two names joined with "+".
   #
   # Solo (only that component, no automatic poly prefix):
-  #   "poly"     – 6-term 2-D polynomial [1, x, z, x², z², xz]
-  #   "sin"      – sine harmonics  sin(2^k · x̄) and sin(2^k · z̄)
-  #   "dct"      – discrete cosine  cos(πk x̄) and cos(πk z̄)
-  #   "legendre" – Legendre polynomials P_k(x̄) and P_k(z̄)
-  #   "wavelet"  – Haar wavelets
+  #   "poly"      – 6-term 2-D polynomial [1, x, z, x², z², xz]
+  #   "sin"       – sine harmonics  sin(2^k · x̄) and sin(2^k · z̄)
+  #   "dct"       – discrete cosine  cos(πk x̄) and cos(πk z̄)
+  #   "legendre"  – Legendre polynomials P_k(x̄) and P_k(z̄)
+  #   "chebyshev" – Chebyshev polynomials of the first kind T_k(x̄) and T_k(z̄)
+  #   "wavelet"   – Haar wavelets
+  #   "rbf"       – Gaussian radial basis functions along x and z separately
+  #   "bspline"   – Uniform cubic B-splines along x and z separately
   #
   # Duo (concatenation of two components, any combination):
-  #   "poly+sin", "poly+dct", "poly+legendre", "poly+wavelet",
-  #   "sin+dct",  "sin+legendre", "sin+wavelet",
-  #   "dct+legendre", "dct+wavelet", "legendre+wavelet"
+  #   "poly+sin", "poly+dct", "poly+legendre", "poly+chebyshev",
+  #   "poly+rbf",  "poly+bspline", "rbf+bspline", etc.
   #
   # Backward-compatible alias: "poly_sin" → "poly+sin"
   type: "poly+sin"
 
-  # Number of sine/DCT/Legendre terms along each axis
-  # (only used when the type includes "sin", "dct", or "legendre")
+  # Number of sine/DCT/Legendre/Chebyshev terms along each axis
+  # (only used when the type includes "sin", "dct", "legendre", or "chebyshev")
   orderx: 1
   orderz: 3
 
   # Haar wavelet decomposition levels (only used when type includes "wavelet")
   wav_levels_x: 2
   wav_levels_z: 2
+
+  # Gaussian RBF: number of equi-spaced centres per axis and shape parameter ε
+  # (only used when type includes "rbf")
+  # RBF value: exp(−ε² · (x̄ − cᵢ)²)
+  rbf_centers_x: 5
+  rbf_centers_z: 5
+  rbf_shape: 1.0
+
+  # B-spline: number of interior knots per axis and polynomial degree
+  # (only used when type includes "bspline")
+  # Total basis functions per axis = bspline_nknots + bspline_degree + 1
+  bspline_nknots_x: 6
+  bspline_nknots_z: 6
+  bspline_degree: 3
 
 # ------------------------------------------------------------------
 # Model (training / optimisation) configuration
