@@ -146,8 +146,14 @@ monte_carlo:
   # Number of Monte Carlo restarts for the inverse solver.
   # Each restart uses independent random initial coefficients.
   # N_mc = 1 (default) reproduces the original single-run behaviour.
-  # For N_mc > 1: mean C and mean U fields are saved/plotted; all
-  # per-run weight vectors are stored in mc_weights.npy for UQ.
+  #
+  # For N_mc > 1:
+  #   - The inverse solver is run N_mc times with independent random inits.
+  #   - Each realization: decode coefficients → C field → run forward solver → U field.
+  #   - Mean C  = pointwise mean over all N_mc decoded C fields (NOT averaged weights).
+  #   - Mean U  = pointwise mean over all N_mc forward-solver U outputs.
+  #   - Std C / Std U are also computed for the confidence band in plotting.
+  #   - Confidence band = mean ± BAND_K * std (set BAND_K in the plotting scripts).
   N_mc: 1
 
 # ------------------------------------------------------------------

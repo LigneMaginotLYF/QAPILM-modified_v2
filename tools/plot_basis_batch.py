@@ -19,6 +19,19 @@ Produces **two** sets of figures:
     - U field snapshots at configurable years: same 3-panel layout,
       one row per snapshot year, one column group per basis type.
 
+Mean and confidence band
+------------------------
+The **mean estimate** is the pointwise mean of the C (or U) field over all
+MC realizations within a run::
+
+    mean(x) = (1/N_mc) * sum_i  field_i(x)
+
+The **confidence band** is mean ± k·std, where *k* is set by ``BAND_K``
+(default 1.0 → 68 % interval for approximately Gaussian ensembles)::
+
+    lower(x) = mean(x) - BAND_K * std(x)
+    upper(x) = mean(x) + BAND_K * std(x)
+
 Usage
 -----
 1.  Edit the ``TUNABLE PARAMETERS`` block below.
@@ -77,6 +90,12 @@ U_SPATIAL_FIX_1   = 10
 U_SPATIAL_AXIS_2  = "z"
 U_SPATIAL_FIX_2   = 25
 
+# --- Confidence band ----------------------------------------------------------
+# Confidence band = mean ± BAND_K * std  at each grid / time point.
+# BAND_K = 1.0 → ±1σ → nominally 68 % interval for Gaussian ensembles.
+# BAND_K = 2.0 → ±2σ → nominally 95 % interval.
+BAND_K = 1.0
+
 # --- Set B: parallel field parameters ----------------------------------------
 # Snapshot years to use for U parallel plots.
 # Only snapshots saved in u_true_snapshots.npy / u_snapshots_all.npy are used.
@@ -90,7 +109,7 @@ CMAP_FIELD = "viridis"
 CMAP_ERROR = "bwr"
 
 # --- Plot style ---------------------------------------------------------------
-CONFIDENCE_ALPHA = 0.20
+CONFIDENCE_ALPHA = 0.25
 LINE_WIDTH       = 1.8
 COLORMAP         = "tab10"
 FIGSIZE_XSEC     = (7, 4.5)
@@ -198,7 +217,9 @@ def _set_axis_labels(ax, xlabel, ylabel, title):
     ax.legend(fontsize=9)
 
 
-def plot_c_xsec(runs_data, labels, idx, axis, colors=None, save_path=None):
+def plot_c_xsec(runs_data, labels, idx, axis, colors=None,
+                band_k=BAND_K, save_path=None):
+    """Plot C cross section (mean ± band_k·std) for all runs, superposed."""
     fig, ax = plt.subplots(figsize=FIGSIZE_XSEC, dpi=DPI)
     if colors is None:
         colors = _run_colors(len(runs_data))
@@ -234,9 +255,11 @@ def plot_c_xsec(runs_data, labels, idx, axis, colors=None, save_path=None):
                 truth_plotted = True
 
         ax.plot(xs, m, color=col, lw=LINE_WIDTH, label=lbl, zorder=2)
-        ax.fill_between(xs, m - s, m + s, color=col, alpha=CONFIDENCE_ALPHA)
+        ax.fill_between(xs, m - band_k * s, m + band_k * s,
+                        color=col, alpha=CONFIDENCE_ALPHA, zorder=1)
 
-    _set_axis_labels(ax, xlabel, r"$C$  (m²/year)", f"C field — {phys}")
+    title = f"C field — {phys}  [band = mean ± {band_k:.1f}σ]"
+    _set_axis_labels(ax, xlabel, r"$C$  (m²/year)", title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=DPI, bbox_inches="tight")
@@ -247,18 +270,23 @@ def plot_c_xsec(runs_data, labels, idx, axis, colors=None, save_path=None):
     return fig
 
 
-def plot_u_temporal(runs_data, labels, pt_idx, colors=None, save_path=None):
+def plot_u_temporal(runs_data, labels, pt_idx, colors=None,
+                    band_k=BAND_K, save_path=None):
+    """Plot U temporal evolution (mean ± band_k·std) at monitor point *pt_idx*."""
     fig, ax = plt.subplots(figsize=FIGSIZE_XSEC, dpi=DPI)
     if colors is None:
         colors = _run_colors(len(runs_data))
 
     truth_plotted = False
     pt_info = ""
+    any_data = False
     for data, lbl, col in zip(runs_data, labels, colors):
         u_temporal = data.get("u_temporal_all")
         t_coords   = data.get("t_coords")
         if u_temporal is None or t_coords is None:
-            print(f"  [WARNING] No temporal data for '{lbl}' – skipping.")
+            print(f"  [WARNING] No U temporal ensemble data for '{lbl}'.")
+            print(f"            (re-run experiments with current run_batch.py"
+                  f" to generate u_temporal_all.npy)")
             continue
         n_mc, n_pts, numt1 = u_temporal.shape
         if pt_idx >= n_pts:
@@ -267,23 +295,28 @@ def plot_u_temporal(runs_data, labels, pt_idx, colors=None, save_path=None):
         t = t_coords[:numt1]
         u_pt = u_temporal[:, pt_idx, :]
         m, s = np.mean(u_pt, axis=0), np.std(u_pt, axis=0)
+        any_data = True
 
         if not truth_plotted and "u_true_temporal" in data:
             ut = data["u_true_temporal"]
             if pt_idx < ut.shape[0]:
-                ax.plot(t, ut[pt_idx], "k--", lw=LINE_WIDTH,
+                ax.plot(t, ut[pt_idx, :min(numt1, ut.shape[1])], "k--", lw=LINE_WIDTH,
                         label="Ground truth", zorder=3)
                 truth_plotted = True
 
         ax.plot(t, m, color=col, lw=LINE_WIDTH, label=lbl, zorder=2)
-        ax.fill_between(t, m - s, m + s, color=col, alpha=CONFIDENCE_ALPHA)
+        ax.fill_between(t, m - band_k * s, m + band_k * s,
+                        color=col, alpha=CONFIDENCE_ALPHA, zorder=1)
 
         if not pt_info and "monitor_points" in data and pt_idx < len(data["monitor_points"]):
             r, c = data["monitor_points"][pt_idx]
             pt_info = f"  (row={r}, col={c})"
 
-    _set_axis_labels(ax, "t (year)", "u  (pore pressure)",
-                     f"u temporal evolution{pt_info}")
+    if not any_data:
+        print(f"  [WARNING] No data to plot for U temporal panel (pt_idx={pt_idx}).")
+
+    title = f"u temporal evolution{pt_info}  [band = mean ± {band_k:.1f}σ]"
+    _set_axis_labels(ax, "t (year)", "u  (pore pressure)", title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=DPI, bbox_inches="tight")
@@ -295,18 +328,23 @@ def plot_u_temporal(runs_data, labels, pt_idx, colors=None, save_path=None):
 
 
 def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
-                   colors=None, save_path=None):
+                   colors=None, band_k=BAND_K, save_path=None):
+    """Plot U spatial cross section (mean ± band_k·std) at fixed timestep."""
     fig, ax = plt.subplots(figsize=FIGSIZE_XSEC, dpi=DPI)
     if colors is None:
         colors = _run_colors(len(runs_data))
 
     truth_plotted = False
     t_yr_str = ""
+    any_data = False
     for data, lbl, col in zip(runs_data, labels, colors):
         u_snaps    = data.get("u_snapshots_all")
         snap_years = data.get("snapshot_years")
         t_coords   = data.get("t_coords")
         if u_snaps is None:
+            print(f"  [WARNING] No U snapshot ensemble data for '{lbl}'.")
+            print(f"            (re-run experiments with current run_batch.py"
+                  f" to generate u_snapshots_all.npy)")
             continue
 
         if snap_years is not None and t_coords is not None and len(t_coords) > 1:
@@ -319,6 +357,7 @@ def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
 
         u_snap = u_snaps[:, snap_i]
         nv, nh = u_snap.shape[1] - 1, u_snap.shape[2] - 1
+        any_data = True
 
         if axis == "x":
             row_i  = min(fix_idx, nv)
@@ -346,12 +385,16 @@ def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
                     truth_plotted = True
 
         ax.plot(xs, m, color=col, lw=LINE_WIDTH, label=lbl, zorder=2)
-        ax.fill_between(xs, m - s, m + s, color=col, alpha=CONFIDENCE_ALPHA)
+        ax.fill_between(xs, m - band_k * s, m + band_k * s,
+                        color=col, alpha=CONFIDENCE_ALPHA, zorder=1)
         if not t_yr_str and snap_years is not None:
             t_yr_str = f"  (t ≈ {float(snap_years[snap_i]):.3f} yr)"
 
-    _set_axis_labels(ax, xlabel, "u  (pore pressure)",
-                     f"u spatial cross section{t_yr_str}")
+    if not any_data:
+        print(f"  [WARNING] No data to plot for U spatial panel.")
+
+    title = f"u spatial cross section{t_yr_str}  [band = mean ± {band_k:.1f}σ]"
+    _set_axis_labels(ax, xlabel, "u  (pore pressure)", title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=DPI, bbox_inches="tight")
@@ -586,6 +629,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print(f"Scanning '{RESULTS_DIR}' for matching runs …")
+    print(f"Confidence band: mean ± {BAND_K:.1f}σ  (BAND_K = {BAND_K})")
     run_dirs, labels = find_runs(RESULTS_DIR, GLOB_PATTERNS, LABELS)
     if not run_dirs:
         print("ERROR: No matching run directories found.  "
@@ -604,14 +648,14 @@ def main():
     # A1: C cross section fix-x, vary-z
     plot_c_xsec(
         runs_data, labels, idx=C_XSEC_X_IDX, axis="x",
-        colors=colors,
+        colors=colors, band_k=BAND_K,
         save_path=os.path.join(OUTPUT_DIR, "basis_C_xsec_fixedX.png"),
     )
 
     # A2: C cross section fix-z, vary-x
     plot_c_xsec(
         runs_data, labels, idx=C_XSEC_Z_IDX, axis="z",
-        colors=colors,
+        colors=colors, band_k=BAND_K,
         save_path=os.path.join(OUTPUT_DIR, "basis_C_xsec_fixedZ.png"),
     )
 
@@ -619,25 +663,25 @@ def main():
     if U_MODE == "temporal":
         plot_u_temporal(
             runs_data, labels, pt_idx=U_MONITOR_PT_IDX_1,
-            colors=colors,
+            colors=colors, band_k=BAND_K,
             save_path=os.path.join(OUTPUT_DIR, "basis_U_temporal_pt0.png"),
         )
         plot_u_temporal(
             runs_data, labels, pt_idx=U_MONITOR_PT_IDX_2,
-            colors=colors,
+            colors=colors, band_k=BAND_K,
             save_path=os.path.join(OUTPUT_DIR, "basis_U_temporal_pt1.png"),
         )
     else:
         plot_u_spatial(
             runs_data, labels,
             t_idx=U_SPATIAL_T_IDX, axis=U_SPATIAL_AXIS_1, fix_idx=U_SPATIAL_FIX_1,
-            colors=colors,
+            colors=colors, band_k=BAND_K,
             save_path=os.path.join(OUTPUT_DIR, "basis_U_spatial_line1.png"),
         )
         plot_u_spatial(
             runs_data, labels,
             t_idx=U_SPATIAL_T_IDX, axis=U_SPATIAL_AXIS_2, fix_idx=U_SPATIAL_FIX_2,
-            colors=colors,
+            colors=colors, band_k=BAND_K,
             save_path=os.path.join(OUTPUT_DIR, "basis_U_spatial_line2.png"),
         )
 
