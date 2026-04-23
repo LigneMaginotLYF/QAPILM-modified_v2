@@ -19,6 +19,7 @@ See README.md for full instructions.
 import argparse
 import copy
 import csv
+import json
 import os
 import sys
 import traceback
@@ -450,6 +451,42 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     np.save(os.path.join(run_dir, "snapshot_years.npy"),    np.array(snap_years_actual))
     # Monitor point indices: (n_pts, 2) as [row, col]
     np.save(os.path.join(run_dir, "monitor_points.npy"),    np.array(monitor_pts_clamped))
+
+    # ------------------------------------------------------------------
+    # Save run metadata (for batch plotting scripts and reproducibility)
+    # ------------------------------------------------------------------
+    # The "mean estimate" is the pointwise mean of all MC C (or U) fields.
+    # The confidence band is mean ± band_k * std; default band_k = 1.0 (68 %).
+    run_metadata = {
+        "run_name":         run_name,
+        "timestamp":        timestamp,
+        "N_mc":             N_mc,
+        "basis_type":       bconf.type,
+        "epsilon":          mconf.epsilon,
+        "snapshot_years":   snap_years_actual,
+        "monitor_points":   monitor_pts_clamped,
+        "mean_estimate":    "pointwise mean of all MC realizations (not averaged weights)",
+        "confidence_band":  "mean ± band_k * std  (default band_k = 1.0 → ±1σ ≈ 68%)",
+        "saved_files": {
+            "ch_est.npy":             "mean C field  (nv+1, nh+1)",
+            "ch_est_all.npy":         "all MC C fields  (N_mc, nv+1, nh+1)",
+            "u_mean_est.npy":         "mean U at last obs time  (nv+1, nh+1)",
+            "u_est_all.npy":          "all MC U at last obs time  (N_mc, nv+1, nh+1)",
+            "u_temporal_all.npy":     "U at monitor points (N_mc, n_pts, numt+1)",
+            "u_snapshots_all.npy":    "U at snapshot years (N_mc, n_snaps, nv+1, nh+1)",
+            "u_true_temporal.npy":    "truth U at monitor points (n_pts, numt+1)",
+            "u_true_snapshots.npy":   "truth U at snapshot years (n_snaps, nv+1, nh+1)",
+            "t_coords.npy":           "physical time axis in years (numt+1,)",
+            "snapshot_years.npy":     "years for U snapshots (n_snaps,)",
+            "monitor_points.npy":     "[row, col] monitor indices (n_pts, 2)",
+            "ch_true.npy":            "ground-truth C field (nv+1, nh+1)",
+            "mc_weights.npy":         "per-MC weight vectors (N_mc, nb)",
+        },
+    }
+    meta_path = os.path.join(run_dir, "run_metadata.json")
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(run_metadata, fh, indent=2)
+    print(f"  Saved run metadata → {meta_path}")
 
     # Save comparison plot (preserved output format; contents = mean C field)
     plot_path = os.path.join(run_dir, "triplot_C.png")
