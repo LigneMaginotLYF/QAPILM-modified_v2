@@ -23,6 +23,7 @@ import os
 import sys
 import traceback
 import warnings
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +47,7 @@ from qapilm_rect import (
     SolverConfig,
     RunConfig,
     RectangularQAPILM,
+    softplus,
 )
 
 
@@ -108,11 +110,17 @@ def _cfg_to_dataclasses(cfg: dict):
 
     # BasisConfig
     bconf = BasisConfig(
-        type         = str(b_raw.get("type",         BasisConfig.type)),
-        orderx       = int(b_raw.get("orderx",       BasisConfig.orderx)),
-        orderz       = int(b_raw.get("orderz",       BasisConfig.orderz)),
-        wav_levels_x = int(b_raw.get("wav_levels_x", BasisConfig.wav_levels_x)),
-        wav_levels_z = int(b_raw.get("wav_levels_z", BasisConfig.wav_levels_z)),
+        type             = str(b_raw.get("type",             BasisConfig.type)),
+        orderx           = int(b_raw.get("orderx",           BasisConfig.orderx)),
+        orderz           = int(b_raw.get("orderz",           BasisConfig.orderz)),
+        wav_levels_x     = int(b_raw.get("wav_levels_x",     BasisConfig.wav_levels_x)),
+        wav_levels_z     = int(b_raw.get("wav_levels_z",     BasisConfig.wav_levels_z)),
+        rbf_centers_x    = int(b_raw.get("rbf_centers_x",    BasisConfig.rbf_centers_x)),
+        rbf_centers_z    = int(b_raw.get("rbf_centers_z",    BasisConfig.rbf_centers_z)),
+        rbf_shape        = float(b_raw.get("rbf_shape",       BasisConfig.rbf_shape)),
+        bspline_nknots_x = int(b_raw.get("bspline_nknots_x", BasisConfig.bspline_nknots_x)),
+        bspline_nknots_z = int(b_raw.get("bspline_nknots_z", BasisConfig.bspline_nknots_z)),
+        bspline_degree   = int(b_raw.get("bspline_degree",   BasisConfig.bspline_degree)),
     )
 
     # ModelConfig
@@ -149,6 +157,52 @@ def _cfg_to_dataclasses(cfg: dict):
 
 
 # ===========================================================================
+# Randomization utilities
+# ===========================================================================
+
+def _rand_seed_or_none(seed: int):
+    """Set numpy random seed if seed != 0; otherwise leave the RNG as-is."""
+    if seed != 0:
+        np.random.seed(seed)
+
+
+def _replace_coeft(pconf: "ProblemConfig", new_coeft: tuple) -> "ProblemConfig":
+    """Return a new ProblemConfig identical to *pconf* except for coeft."""
+    d = asdict(pconf)
+    d["coeft"] = new_coeft
+    return ProblemConfig(**d)
+
+
+def _randomize_locations(ukmat_idx, chkmat_idx, numv: int, numh: int):
+    """
+    Return new ukmat and chkmat with the same number of points as the inputs
+    but at uniformly random grid positions (without replacement if possible).
+
+    Parameters
+    ----------
+    ukmat_idx  : list of (row, col) tuples for u observations
+    chkmat_idx : list of (row, col) tuples for C observations
+    numv       : maximum row index (inclusive)
+    numh       : maximum column index (inclusive)
+    """
+    def _sample(n, numv, numh):
+        total_cells = (numv + 1) * (numh + 1)
+        if n > total_cells:
+            # More points requested than cells — allow duplicates
+            rows = np.random.randint(0, numv + 1, size=n)
+            cols = np.random.randint(0, numh + 1, size=n)
+        else:
+            flat = np.random.choice(total_cells, size=n, replace=False)
+            rows = flat // (numh + 1)
+            cols = flat %  (numh + 1)
+        return [tuple(rc) for rc in zip(rows.tolist(), cols.tolist())]
+
+    new_ukmat  = _sample(len(ukmat_idx),  numv, numh)
+    new_chkmat = _sample(len(chkmat_idx), numv, numh)
+    return new_ukmat, new_chkmat
+
+
+# ===========================================================================
 # Single-run executor
 # ===========================================================================
 
@@ -161,6 +215,17 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     computed by decoding each run's weight vector and averaging in field space
     (weights are never averaged).  When N_mc == 1 the behaviour is identical to
     the original single-run output.
+
+    Additional outputs (for batch plotting):
+    - ch_est_all.npy         : (N_mc, nv+1, nh+1) all individual MC C fields
+    - u_est_all.npy          : (N_mc, nv+1, nh+1) individual MC U snapshots
+    - u_temporal_all.npy     : (N_mc, n_pts, numt+1) U at monitor points over time
+    - u_snapshots_all.npy    : (N_mc, n_snaps, nv+1, nh+1) U at snapshot years
+    - u_true_temporal.npy    : (n_pts, numt+1) truth U at monitor points
+    - u_true_snapshots.npy   : (n_snaps, nv+1, nh+1) truth U at snapshot years
+    - t_coords.npy           : (numt+1,) physical time in years
+    - snapshot_years.npy     : (n_snaps,) years corresponding to snapshot indices
+    - monitor_points.npy     : (n_pts, 2) [row, col] monitor point indices
 
     Parameters
     ----------
@@ -177,13 +242,39 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # Number of Monte Carlo restarts (default 1 → original single-run behaviour)
     N_mc = max(1, int(cfg.get("monte_carlo", {}).get("N_mc", 1)))
 
+    # ------------------------------------------------------------------
+    # Randomize option  (default: none → backward compatible)
+    # ------------------------------------------------------------------
+    rand_raw  = cfg.get("randomize", {})
+    rand_mode = str(rand_raw.get("mode", "none")).lower()  # "none"|"coeft"|"locations"
+    rand_seed = int(rand_raw.get("seed", 0))
+
+    # ------------------------------------------------------------------
+    # Plot-output configuration (for batch plotting scripts)
+    # ------------------------------------------------------------------
+    plot_raw        = cfg.get("plot_output", {})
+    snapshot_years  = list(plot_raw.get("snapshot_years", [0.1, 1.0, 2.0]))
+    monitor_points  = [tuple(pt) for pt in plot_raw.get("monitor_points", [[10, 25], [5, 10]])]
+
     print(f"\n{'='*70}")
     print(f"  Starting run: {run_name}  →  {run_dir}")
     print(f"  Monte Carlo N_mc = {N_mc}")
+    if rand_mode != "none":
+        print(f"  Randomize mode   = {rand_mode}  (seed={rand_seed})")
     print(f"{'='*70}")
 
     # Build dataclass configs
     pconf, bconf, mconf, sconf, rconf, ukmat, chkmat, ukt_list = _cfg_to_dataclasses(cfg)
+
+    # ------------------------------------------------------------------
+    # Apply coeft randomization BEFORE building the solver
+    # (solver.__init__ uses pconf.coeft to construct ground-truth C field)
+    # ------------------------------------------------------------------
+    if rand_mode == "coeft":
+        _rand_seed_or_none(rand_seed)
+        n_coeft = len(pconf.coeft)
+        pconf = _replace_coeft(pconf, tuple(np.random.randn(n_coeft).tolist()))
+        print(f"  Randomized coeft ({n_coeft} terms): {list(pconf.coeft)}")
 
     # Redirect per-run outputs into run_dir
     rconf.results_dir = run_dir
@@ -202,6 +293,24 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
 
     # ------------------------------------------------------------------
+    # Apply location randomization AFTER building the solver
+    # (we need numv/numh to clamp random indices to the grid)
+    # ------------------------------------------------------------------
+    if rand_mode == "locations":
+        _rand_seed_or_none(rand_seed)
+        ukmat_idx, chkmat_idx = _randomize_locations(
+            ukmat_idx, chkmat_idx, solver.numv, solver.numh
+        )
+        print(f"  Randomized ukmat  ({len(ukmat_idx)} pts): {ukmat_idx}")
+        print(f"  Randomized chkmat ({len(chkmat_idx)} pts): {chkmat_idx}")
+
+    # Clamp monitor points to valid grid range
+    monitor_pts_clamped = [
+        (min(int(pt[0]), solver.numv), min(int(pt[1]), solver.numh))
+        for pt in monitor_points
+    ]
+
+    # ------------------------------------------------------------------
     # Generate "ground truth" snapshot tensor via forward solver (once)
     # ------------------------------------------------------------------
     top, bot, left, right = pconf.bcs
@@ -210,6 +319,21 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
 
     print(f"  Running forward solver  (numt={numt}) …")
     utens, udeg = solver.forward_solver(solver.chm, numt, u0_mat, top, bot, left, right)
+
+    # Time coordinate array (physical years)
+    t_coords = np.arange(numt + 1) * solver.dt
+
+    # Snapshot time indices (clamp to valid range)
+    snap_t_idxs = [min(int(round(y / solver.dt)), numt) for y in snapshot_years]
+    # Actual years corresponding to each index (may differ slightly due to rounding)
+    snap_years_actual = [t_coords[i] for i in snap_t_idxs]
+
+    # Extract truth temporal traces at monitor points: (n_pts, numt+1)
+    u_true_temporal = np.array(
+        [utens[:, r, c] for r, c in monitor_pts_clamped]
+    )
+    # Extract truth U snapshots at snapshot years: (n_snaps, nv+1, nh+1)
+    u_true_snapshots = np.array([utens[t_i] for t_i in snap_t_idxs])
 
     # Clamp ukt indices to valid range
     ukt_arr = np.clip(ukt_arr, 0, numt)
@@ -220,11 +344,11 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # ------------------------------------------------------------------
     # Monte Carlo inverse loop
     # ------------------------------------------------------------------
-    from qapilm_rect import softplus
-
-    all_coefe  = []   # list of (nb,) arrays
-    all_ch_est = []   # list of (numv+1, numh+1) C fields
-    all_u_est  = []   # list of (numv+1, numh+1) U snapshots at ukt_arr[-1]
+    all_coefe      = []   # list of (nb,) arrays
+    all_ch_est     = []   # list of (numv+1, numh+1) C fields
+    all_u_est      = []   # list of (numv+1, numh+1) U snapshots at ukt_arr[-1]
+    all_u_temporal = []   # list of (n_pts, numt+1) U temporal traces at monitor pts
+    all_u_snapshots= []   # list of (n_snaps, numv+1, numh+1) U at snapshot years
 
     for mc_idx in range(N_mc):
         mc_label = f"MC {mc_idx + 1}/{N_mc}"
@@ -264,9 +388,18 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         # U snapshot at the last observation time
         u_est_snap = utens_est[ukt_arr[-1]].copy()
 
+        # Extract temporal traces at monitor points: (n_pts, numt+1)
+        u_temporal_run = np.array(
+            [utens_est[:, r, c] for r, c in monitor_pts_clamped]
+        )
+        # Extract U snapshots at specified years: (n_snaps, nv+1, nh+1)
+        u_snaps_run = np.array([utens_est[t_i] for t_i in snap_t_idxs])
+
         all_coefe.append(coefe.copy())
         all_ch_est.append(ch_est)
         all_u_est.append(u_est_snap)
+        all_u_temporal.append(u_temporal_run)
+        all_u_snapshots.append(u_snaps_run)
 
         print(f"  [{mc_label}] done")
 
@@ -295,6 +428,28 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # Backward compat: for N_mc == 1 also write the original coefe.npy
     if N_mc == 1:
         np.save(os.path.join(run_dir, "coefe.npy"), mc_weights[0])
+
+    # ------------------------------------------------------------------
+    # Extended outputs for batch plotting (new)
+    # ------------------------------------------------------------------
+    # All individual MC C fields: (N_mc, nv+1, nh+1)
+    np.save(os.path.join(run_dir, "ch_est_all.npy"),      np.array(all_ch_est))
+    # All individual MC U snapshots at last obs time: (N_mc, nv+1, nh+1)
+    np.save(os.path.join(run_dir, "u_est_all.npy"),       np.array(all_u_est))
+    # U temporal traces at monitor points: (N_mc, n_pts, numt+1)
+    np.save(os.path.join(run_dir, "u_temporal_all.npy"),  np.array(all_u_temporal))
+    # U snapshots at specified years: (N_mc, n_snaps, nv+1, nh+1)
+    np.save(os.path.join(run_dir, "u_snapshots_all.npy"), np.array(all_u_snapshots))
+    # Truth temporal traces: (n_pts, numt+1)
+    np.save(os.path.join(run_dir, "u_true_temporal.npy"),  u_true_temporal)
+    # Truth U snapshots: (n_snaps, nv+1, nh+1)
+    np.save(os.path.join(run_dir, "u_true_snapshots.npy"), u_true_snapshots)
+    # Physical time axis: (numt+1,)
+    np.save(os.path.join(run_dir, "t_coords.npy"),          t_coords)
+    # Snapshot years (actual, after rounding): (n_snaps,)
+    np.save(os.path.join(run_dir, "snapshot_years.npy"),    np.array(snap_years_actual))
+    # Monitor point indices: (n_pts, 2) as [row, col]
+    np.save(os.path.join(run_dir, "monitor_points.npy"),    np.array(monitor_pts_clamped))
 
     # Save comparison plot (preserved output format; contents = mean C field)
     plot_path = os.path.join(run_dir, "triplot_C.png")

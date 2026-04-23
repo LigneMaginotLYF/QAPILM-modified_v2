@@ -26,6 +26,8 @@ Adam optimiser and an ε-insensitive loss.
 | `sweep.yaml` | **Batch sweep list** – one entry per experiment run; each entry overrides selected keys from `config.yaml` |
 | `run_batch.py` | **Batch runner** – loads the two YAML files and executes all sweep entries, writing per-run results and a summary CSV |
 | `vanilla_PINN_2D_rect.py` | **PINN solver** – physics-informed neural network for joint u/C recovery; generates observations via FD forward solver, trains two networks, saves timestamped models, and plots Real / QAPILM / PINN comparisons |
+| `tools/plot_epsilon_batch.py` | **ε-threshold batch plotter** – reads multiple run directories and superimposes confidence bands for C cross sections and U temporal/spatial panels |
+| `tools/plot_basis_batch.py` | **Basis-form batch plotter** – same cross-section plots plus parallel field comparison (truth / mean prediction / error) across basis types |
 
 ---
 
@@ -127,22 +129,142 @@ Each sweep entry creates a time-stamped sub-folder inside `results/`
 ```
 results/
   baseline_20250101_120000/
-    QAPILM_Eps_loss.npy     # loss curve for N_mc=1; for N_mc>1: QAPILM_Eps_loss_mc000.npy … mc{N_mc-1:03d}.npy
-    mc_weights.npy          # all per-run weight vectors, shape (N_mc, nb)
-    coefe.npy               # single-run coefe (only written when N_mc == 1)
-    ch_est.npy              # mean estimated C field
-    u_mean_est.npy          # mean estimated U field at last observation time
-    ch_true.npy             # ground-truth C field
-    triplot_C.png           # three-panel comparison plot (mean C field)
+    QAPILM_Eps_loss.npy      # loss curve for N_mc=1; for N_mc>1: QAPILM_Eps_loss_mc000.npy … mc{N_mc-1:03d}.npy
+    mc_weights.npy           # all per-run weight vectors, shape (N_mc, nb)
+    coefe.npy                # single-run coefe (only written when N_mc == 1)
+    ch_est.npy               # mean estimated C field
+    ch_est_all.npy           # all individual MC C fields, shape (N_mc, nv+1, nh+1)
+    u_mean_est.npy           # mean estimated U field at last observation time
+    u_est_all.npy            # all individual MC U snapshots, shape (N_mc, nv+1, nh+1)
+    u_temporal_all.npy       # U at monitor points over time, shape (N_mc, n_pts, numt+1)
+    u_snapshots_all.npy      # U at snapshot years, shape (N_mc, n_snaps, nv+1, nh+1)
+    u_true_temporal.npy      # truth U at monitor points, shape (n_pts, numt+1)
+    u_true_snapshots.npy     # truth U at snapshot years, shape (n_snaps, nv+1, nh+1)
+    t_coords.npy             # physical time axis in years, shape (numt+1,)
+    snapshot_years.npy       # years corresponding to u_*_snapshots.npy
+    monitor_points.npy       # [row, col] indices of monitor points, shape (n_pts, 2)
+    ch_true.npy              # ground-truth C field
+    triplot_C.png            # three-panel comparison plot (mean C field)
   eps_0.05_20250101_120100/
     ...
-  coeffs_batch.csv          # summary table: one row per run
+  coeffs_batch.csv           # summary table: one row per run
 ```
 
 `coeffs_batch.csv` contains columns for `run_name`, `N_mc`, `basis_type`,
 `epsilon`, `regen_fluc`, `fluc_seed`, `Rcv`, `final_loss`, `cos_sim`,
 `RMSE`, `max_err`, and (for `N_mc == 1`) all optimised coefficients
 (`coef_0`, `coef_1`, …).
+
+---
+
+## Batch plotting scripts
+
+### `tools/plot_epsilon_batch.py`
+
+Reads run directories from a results folder and superimposes confidence
+bands (mean ± std across the MC ensemble) for an epsilon-threshold batch
+sweep.  Four plots are produced:
+
+- **C cross section at x = const** (vary z) — `eps_C_xsec_fixedX.png`
+- **C cross section at z = const** (vary x) — `eps_C_xsec_fixedZ.png`
+- **U field panels** (× 2): either temporal evolution at fixed spatial
+  points (`eps_U_temporal_pt*.png`) or spatial line at a fixed timestep
+  (`eps_U_spatial_line*.png`) depending on `U_MODE`.
+
+All tunable parameters are at the top of the script:
+
+| Variable | Purpose |
+|----------|---------|
+| `RESULTS_DIR` | Parent folder containing run sub-directories |
+| `GLOB_PATTERNS` | List of glob patterns to select runs (most-recent match per pattern) |
+| `LABELS` | Legend labels (same order as `GLOB_PATTERNS`) |
+| `C_XSEC_X_IDX` / `C_XSEC_Z_IDX` | Grid column/row indices for the two C cross sections |
+| `U_MODE` | `"temporal"` (evolve in time at fixed point) or `"spatial"` (line at fixed t) |
+| `U_MONITOR_PT_IDX_1/2` | Indices into the saved `monitor_points` array |
+| `U_SPATIAL_T_IDX` | Timestep index for spatial mode |
+| `OUTPUT_DIR` | Output folder for saved PNG files |
+
+```bash
+python tools/plot_epsilon_batch.py
+```
+
+The script requires that the run directories were created by `run_batch.py`
+with `monte_carlo.N_mc > 1` (to produce non-trivial confidence bands).
+For single-run results the confidence band collapses to a single line.
+
+### `tools/plot_basis_batch.py`
+
+Compares batch results across different basis-function configurations.
+Produces **two sets** of figures:
+
+**Set A** (same layout as `plot_epsilon_batch.py`):
+- `basis_C_xsec_fixedX.png`, `basis_C_xsec_fixedZ.png`
+- `basis_U_temporal_pt*.png` or `basis_U_spatial_line*.png`
+
+**Set B** (parallel field plots with equal-sized panels):
+- `basis_C_parallel.png` — C field rows: [truth | mean prediction | error]
+- `basis_U_parallel_t{t}yr.png` — U field at each snapshot year:
+  [truth | mean prediction | error], one row per basis type
+
+```bash
+python tools/plot_basis_batch.py
+```
+
+Tunable parameters include all of the above plus:
+
+| Variable | Purpose |
+|----------|---------|
+| `U_SNAP_YEARS_TO_PLOT` | Physical years for U parallel plots |
+| `ERROR_MODE` | `"log_ratio"` (log truth/pred) or `"diff"` (truth − pred) |
+
+---
+
+## Randomize option
+
+`run_batch.py` supports an optional **randomize** mode that perturbs the
+ground-truth or measurement setup before each run, useful for sensitivity
+analysis and robustness testing.
+
+Add a `randomize:` block to `config.yaml` or to a sweep entry in `sweep.yaml`:
+
+```yaml
+randomize:
+  mode: "coeft"    # "none" (default) | "coeft" | "locations"
+  seed: 42         # integer ≥ 1 for reproducibility; 0 = leave RNG unseeded
+```
+
+| Mode | Effect |
+|------|--------|
+| `"none"` | No randomization — backward-compatible default |
+| `"coeft"` | Replaces the ground-truth trend polynomial coefficients (`problem.coeft`) with independent N(0, 1) random values, keeping the same number of coefficients |
+| `"locations"` | Replaces `ukmat` and `chkmat` measurement locations with uniformly random grid positions while keeping the same number of measurement points |
+
+**Example sweep entry** (vary coeft seed across runs):
+
+```yaml
+sweeps:
+  - name: "rand_coeft_s1"
+    randomize:
+      mode: "coeft"
+      seed: 1
+  - name: "rand_coeft_s2"
+    randomize:
+      mode: "coeft"
+      seed: 2
+```
+
+**Example sweep entry** (randomize measurement locations):
+
+```yaml
+sweeps:
+  - name: "rand_locs_s1"
+    randomize:
+      mode: "locations"
+      seed: 100
+```
+
+> **Backward compatibility**: when `randomize:` is absent from the config
+> (or `mode: "none"`), the behaviour is identical to previous versions.
 
 ---
 
@@ -197,7 +319,8 @@ computation and potential overfitting with sparse data.
 - **Backward compatibility**: existing output file names and figure formats
   produced by `qapilm_rect.py` are preserved unchanged.  When `N_mc == 1`
   the output folder is byte-for-byte identical to the original single-run
-  output (plus the new `mc_weights.npy` file).
+  output (plus the new `mc_weights.npy`, `ch_est_all.npy`, and auxiliary
+  time-series files).
 - **Memory**: `solver.memory_mode: full` is the backward-compatible default.
   Use `stream` to reduce memory to O(1) in the time dimension.
 - **Reproducibility**: set `regen_fluc: true` and fix `fluc_seed` for
@@ -205,12 +328,19 @@ computation and potential overfitting with sparse data.
 - **Monte Carlo UQ**: set `monte_carlo.N_mc` to a value greater than 1 to
   run the inverse solver multiple times with independent random initial
   coefficients.  All per-run weight vectors are saved to `mc_weights.npy`
-  (shape `(N_mc, nb)`) for downstream uncertainty quantification.  The mean
-  C and mean U fields (averaged in field space, not weight space) replace the
-  single-estimate outputs in `ch_est.npy` and `triplot_C.png`.
+  (shape `(N_mc, nb)`) and all individual C fields to `ch_est_all.npy`
+  (shape `(N_mc, nv+1, nh+1)`) for downstream uncertainty quantification.
+  The mean C and mean U fields replace the single-estimate outputs in
+  `ch_est.npy` and `triplot_C.png`.
   **Computational cost**: each MC run performs one inverse solve **and** one
   additional forward solve (to decode the U field); total wall-time scales
   roughly as `N_mc × (1 inverse + 1 forward)` per sweep entry.
+- **Batch plotting**: `tools/plot_epsilon_batch.py` and
+  `tools/plot_basis_batch.py` load the extended output arrays
+  (`ch_est_all.npy`, `u_temporal_all.npy`, `u_snapshots_all.npy`, etc.) to
+  produce publication-ready comparison figures across multiple runs.
+  These files are written automatically by `run_batch.py`; no extra
+  configuration is required beyond the `plot_output:` block in `config.yaml`.
 - **YAML encoding**: all YAML files (`config.yaml`, `sweep.yaml`, custom
   configs) must be saved with **UTF-8** encoding.  On Windows the default
   system encoding (e.g. GBK) can cause a `UnicodeDecodeError` when loading;

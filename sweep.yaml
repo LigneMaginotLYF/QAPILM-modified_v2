@@ -114,3 +114,49 @@ sweeps:
       N_mc: 10
     model:
       epsilon: 0.05
+
+  # --- Sweep 13: Chebyshev basis (solo) ---
+  - name: "basis_chebyshev"
+    basis:
+      type: "chebyshev"
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 13b: poly+Chebyshev duo ---
+  - name: "basis_poly_chebyshev"
+    basis:
+      type: "poly+chebyshev"
+      orderx: 3
+      orderz: 4
+
+  # --- Sweep 14: Gaussian RBF basis (solo) ---
+  - name: "basis_rbf"
+    basis:
+      type: "rbf"
+      rbf_centers_x: 5
+      rbf_centers_z: 5
+      rbf_shape: 1.0
+
+  # --- Sweep 14b: poly+RBF duo ---
+  - name: "basis_poly_rbf"
+    basis:
+      type: "poly+rbf"
+      rbf_centers_x: 5
+      rbf_centers_z: 5
+      rbf_shape: 1.0
+
+  # --- Sweep 15: B-spline basis (solo) ---
+  - name: "basis_bspline"
+    basis:
+      type: "bspline"
+      bspline_nknots_x: 6
+      bspline_nknots_z: 6
+      bspline_degree: 3
+
+  # --- Sweep 15b: poly+B-spline duo ---
+  - name: "basis_poly_bspline"
+    basis:
+      type: "poly+bspline"
+      bspline_nknots_x: 6
+      bspline_nknots_z: 6
+      bspline_degree: 3
