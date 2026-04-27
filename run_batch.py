@@ -408,11 +408,25 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # final_loss below reflects only that last iteration (representative scalar for CSV).
 
     # ------------------------------------------------------------------
-    # Aggregate: mean fields (fields are averaged, not weight vectors)
+    # Aggregate: mean and std fields (fields are aggregated, not weights)
     # ------------------------------------------------------------------
-    mc_weights  = np.array(all_coefe)                    # (N_mc, nb)
-    mean_ch_est = np.mean(np.array(all_ch_est), axis=0)  # (numv+1, numh+1)
-    mean_u_est  = np.mean(np.array(all_u_est),  axis=0)  # (numv+1, numh+1)
+    mc_weights       = np.array(all_coefe)                         # (N_mc, nb)
+    ch_est_arr       = np.array(all_ch_est)                        # (N_mc, nv+1, nh+1)
+    u_temporal_arr   = np.array(all_u_temporal)                    # (N_mc, n_pts, numt+1)
+    u_snapshots_arr  = np.array(all_u_snapshots)                   # (N_mc, n_snaps, nv+1, nh+1)
+    u_est_arr        = np.array(all_u_est)                         # (N_mc, nv+1, nh+1)
+
+    mean_ch_est      = np.mean(ch_est_arr,      axis=0)            # (nv+1, nh+1)
+    std_ch_est       = np.std( ch_est_arr,      axis=0)            # (nv+1, nh+1)
+    mean_u_est       = np.mean(u_est_arr,       axis=0)            # (nv+1, nh+1)
+    u_temporal_mean  = np.mean(u_temporal_arr,  axis=0)            # (n_pts, numt+1)
+    u_temporal_std   = np.std( u_temporal_arr,  axis=0)            # (n_pts, numt+1)
+    u_snapshots_mean = np.mean(u_snapshots_arr, axis=0)            # (n_snaps, nv+1, nh+1)
+    u_snapshots_std  = np.std( u_snapshots_arr, axis=0)            # (n_snaps, nv+1, nh+1)
+
+    # Spatial grid coordinates (for plotting)
+    x_coords = np.linspace(0.0, float(pconf.Lh), solver.numh + 1)  # (nh+1,)
+    z_coords = np.linspace(0.0, float(pconf.Lv), solver.numv + 1)  # (nv+1,)
 
     # ------------------------------------------------------------------
     # Save outputs
@@ -421,6 +435,8 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     np.save(os.path.join(run_dir, "mc_weights.npy"), mc_weights)
     # Mean C field (replaces single-run ch_est.npy)
     np.save(os.path.join(run_dir, "ch_est.npy"),     mean_ch_est)
+    # Std of C field across MC realizations
+    np.save(os.path.join(run_dir, "ch_est_std.npy"), std_ch_est)
     # Mean U field at last observation time
     np.save(os.path.join(run_dir, "u_mean_est.npy"), mean_u_est)
     # Ground-truth C field
@@ -431,16 +447,16 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         np.save(os.path.join(run_dir, "coefe.npy"), mc_weights[0])
 
     # ------------------------------------------------------------------
-    # Extended outputs for batch plotting (new)
+    # Extended outputs for batch plotting
     # ------------------------------------------------------------------
     # All individual MC C fields: (N_mc, nv+1, nh+1)
-    np.save(os.path.join(run_dir, "ch_est_all.npy"),      np.array(all_ch_est))
+    np.save(os.path.join(run_dir, "ch_est_all.npy"),      ch_est_arr)
     # All individual MC U snapshots at last obs time: (N_mc, nv+1, nh+1)
-    np.save(os.path.join(run_dir, "u_est_all.npy"),       np.array(all_u_est))
+    np.save(os.path.join(run_dir, "u_est_all.npy"),       u_est_arr)
     # U temporal traces at monitor points: (N_mc, n_pts, numt+1)
-    np.save(os.path.join(run_dir, "u_temporal_all.npy"),  np.array(all_u_temporal))
+    np.save(os.path.join(run_dir, "u_temporal_all.npy"),  u_temporal_arr)
     # U snapshots at specified years: (N_mc, n_snaps, nv+1, nh+1)
-    np.save(os.path.join(run_dir, "u_snapshots_all.npy"), np.array(all_u_snapshots))
+    np.save(os.path.join(run_dir, "u_snapshots_all.npy"), u_snapshots_arr)
     # Truth temporal traces: (n_pts, numt+1)
     np.save(os.path.join(run_dir, "u_true_temporal.npy"),  u_true_temporal)
     # Truth U snapshots: (n_snaps, nv+1, nh+1)
@@ -451,6 +467,58 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     np.save(os.path.join(run_dir, "snapshot_years.npy"),    np.array(snap_years_actual))
     # Monitor point indices: (n_pts, 2) as [row, col]
     np.save(os.path.join(run_dir, "monitor_points.npy"),    np.array(monitor_pts_clamped))
+
+    # ------------------------------------------------------------------
+    # Precomputed field statistics (new) – mean and std across MC ensemble
+    # ------------------------------------------------------------------
+    # These files allow batch_plot tools to reconstruct confidence bands
+    # without re-running the forward solver or decoding mc_weights again.
+    #
+    #   ch_est_std.npy       : (nv+1, nh+1)        std of C across MC realizations
+    #   u_temporal_mean.npy  : (n_pts, numt+1)      mean U at monitor pts over time
+    #   u_temporal_std.npy   : (n_pts, numt+1)      std  U at monitor pts over time
+    #   u_snapshots_mean.npy : (n_snaps, nv+1, nh+1) mean U at snapshot years
+    #   u_snapshots_std.npy  : (n_snaps, nv+1, nh+1) std  U at snapshot years
+    #   x_coords.npy         : (nh+1,)              horizontal grid positions (m)
+    #   z_coords.npy         : (nv+1,)              vertical   grid positions (m)
+    np.save(os.path.join(run_dir, "u_temporal_mean.npy"),   u_temporal_mean)
+    np.save(os.path.join(run_dir, "u_temporal_std.npy"),    u_temporal_std)
+    np.save(os.path.join(run_dir, "u_snapshots_mean.npy"),  u_snapshots_mean)
+    np.save(os.path.join(run_dir, "u_snapshots_std.npy"),   u_snapshots_std)
+    np.save(os.path.join(run_dir, "x_coords.npy"),          x_coords)
+    np.save(os.path.join(run_dir, "z_coords.npy"),          z_coords)
+
+    # ------------------------------------------------------------------
+    # NPZ bundle: single-file archive with all stats + grids for plotting
+    # ------------------------------------------------------------------
+    # batch_stats.npz contains everything needed to produce confidence-band
+    # plots without re-running any solver.  Keys:
+    #   ch_true, ch_est_mean, ch_est_std
+    #   u_temporal_mean, u_temporal_std, u_true_temporal
+    #   u_snapshots_mean, u_snapshots_std, u_true_snapshots
+    #   x_coords, z_coords, t_coords, snapshot_years, monitor_points
+    np.savez(
+        os.path.join(run_dir, "batch_stats.npz"),
+        # C field
+        ch_true          = solver.chm,
+        ch_est_mean      = mean_ch_est,
+        ch_est_std       = std_ch_est,
+        # U temporal traces at monitor points
+        u_temporal_mean  = u_temporal_mean,
+        u_temporal_std   = u_temporal_std,
+        u_true_temporal  = u_true_temporal,
+        # U spatial snapshots
+        u_snapshots_mean = u_snapshots_mean,
+        u_snapshots_std  = u_snapshots_std,
+        u_true_snapshots = u_true_snapshots,
+        # Grids and axes
+        x_coords         = x_coords,
+        z_coords         = z_coords,
+        t_coords         = t_coords,
+        snapshot_years   = np.array(snap_years_actual),
+        monitor_points   = np.array(monitor_pts_clamped),
+    )
+    print(f"  Saved field statistics → {os.path.join(run_dir, 'batch_stats.npz')}")
 
     # ------------------------------------------------------------------
     # Save run metadata (for batch plotting scripts and reproducibility)
@@ -496,7 +564,17 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         "mean_estimate":    "pointwise mean of all MC realizations (not averaged weights)",
         "confidence_band":  "mean ± band_k * std  (default band_k = 1.0 → ±1σ ≈ 68%)",
         "saved_files": {
+            # ---- precomputed statistics (primary input for batch_plot tools) ----
+            "batch_stats.npz":        "NPZ bundle: all mean/std stats + grids (ch_true, ch_est_mean/std, u_temporal_mean/std, u_true_temporal, u_snapshots_mean/std, u_true_snapshots, x_coords, z_coords, t_coords, snapshot_years, monitor_points)",
             "ch_est.npy":             "mean C field  (nv+1, nh+1)",
+            "ch_est_std.npy":         "std  C field across MC realizations  (nv+1, nh+1)",
+            "u_temporal_mean.npy":    "mean U at monitor pts over time  (n_pts, numt+1)",
+            "u_temporal_std.npy":     "std  U at monitor pts over time  (n_pts, numt+1)",
+            "u_snapshots_mean.npy":   "mean U at snapshot years  (n_snaps, nv+1, nh+1)",
+            "u_snapshots_std.npy":    "std  U at snapshot years  (n_snaps, nv+1, nh+1)",
+            "x_coords.npy":           "horizontal grid positions in metres  (nh+1,)",
+            "z_coords.npy":           "vertical   grid positions in metres  (nv+1,)",
+            # ---- per-MC ensemble arrays (retained for backward compat) ---------
             "ch_est_all.npy":         "all MC C fields  (N_mc, nv+1, nh+1)",
             "u_mean_est.npy":         "mean U at last obs time  (nv+1, nh+1)",
             "u_est_all.npy":          "all MC U at last obs time  (N_mc, nv+1, nh+1)",

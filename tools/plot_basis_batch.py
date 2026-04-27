@@ -54,6 +54,18 @@ import matplotlib.colors as mcolors
 from matplotlib.cm import get_cmap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+# Apply Times New Roman font with larger sizes for readability
+plt.rcParams.update({
+    "font.family":       "serif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "font.size":         13,
+    "axes.labelsize":    13,
+    "axes.titlesize":    14,
+    "legend.fontsize":   11,
+    "xtick.labelsize":   11,
+    "ytick.labelsize":   11,
+})
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qapilm_rect import (
     ProblemConfig, BasisConfig, ModelConfig, SolverConfig, RunConfig,
@@ -129,7 +141,11 @@ OUTPUT_DIR = "./plots"
 # --- MC reconstruction behavior ------------------------------------------------
 # If True, load mc_weights.npy + run_config_resolved.json and reconstruct each
 # MC realization as: coef -> C -> forward solve U, then compute mean/std bands.
-REBUILD_FROM_MC_WEIGHTS = True
+# When False (default), the script reads pre-saved mean/std statistics from
+# batch_stats.npz (or individual *_mean.npy / *_std.npy files) written by
+# run_batch.py, avoiding any forward-solver recomputation at plot time.
+# Set to True only when older run folders lack the precomputed stats files.
+REBUILD_FROM_MC_WEIGHTS = False
 
 # =============================================================================
 # END OF TUNABLE PARAMETERS
@@ -149,6 +165,92 @@ def _try_load(run_dir: str, *filenames):
             except Exception as exc:
                 print(f"  [WARNING] Failed to load '{path}': {exc}")
     return None
+
+
+def _load_from_precomputed_stats(run_dir: str):
+    """Load pre-saved mean/std statistics from batch_stats.npz or individual files.
+
+    Primary loading path: reads arrays written by run_batch.py without
+    requiring any forward-solver recomputation.  Falls back to loading
+    individual ``*_mean.npy`` / ``*_std.npy`` files if the NPZ bundle is absent.
+
+    Returns
+    -------
+    dict or None if nothing found.
+    """
+    d = {}
+    npz_path = os.path.join(run_dir, "batch_stats.npz")
+    if os.path.exists(npz_path):
+        try:
+            bundle = np.load(npz_path, allow_pickle=False)
+            if "ch_est_mean" in bundle:
+                d["ch_est_mean"] = bundle["ch_est_mean"]
+                d["ch_est_std"]  = bundle["ch_est_std"] if "ch_est_std" in bundle \
+                                   else np.zeros_like(d["ch_est_mean"])
+            if "ch_true" in bundle:
+                d["ch_true"] = bundle["ch_true"]
+            if "u_temporal_mean" in bundle:
+                d["u_temporal_mean"] = bundle["u_temporal_mean"]
+                d["u_temporal_std"]  = bundle["u_temporal_std"] if "u_temporal_std" in bundle \
+                                       else np.zeros_like(d["u_temporal_mean"])
+            if "u_true_temporal" in bundle:
+                d["u_true_temporal"] = bundle["u_true_temporal"]
+            if "u_snapshots_mean" in bundle:
+                d["u_snapshots_mean"] = bundle["u_snapshots_mean"]
+                d["u_snapshots_std"]  = bundle["u_snapshots_std"] if "u_snapshots_std" in bundle \
+                                        else np.zeros_like(d["u_snapshots_mean"])
+            if "u_true_snapshots" in bundle:
+                d["u_true_snapshots"] = bundle["u_true_snapshots"]
+            if "t_coords" in bundle:
+                d["t_coords"] = bundle["t_coords"]
+            if "snapshot_years" in bundle:
+                d["snapshot_years"] = bundle["snapshot_years"]
+            if "monitor_points" in bundle:
+                d["monitor_points"] = bundle["monitor_points"]
+            if d:
+                return d
+        except Exception as exc:
+            print(f"  [WARNING] Failed to load '{npz_path}': {exc}")
+
+    # Fallback: individual precomputed stats files
+    ch_mean = _try_load(run_dir, "ch_est.npy")
+    ch_std  = _try_load(run_dir, "ch_est_std.npy")
+    if ch_mean is not None:
+        d["ch_est_mean"] = ch_mean
+        d["ch_est_std"]  = ch_std if ch_std is not None else np.zeros_like(ch_mean)
+    ch_true = _try_load(run_dir, "ch_true.npy")
+    if ch_true is not None:
+        d["ch_true"] = ch_true
+
+    u_temp_m = _try_load(run_dir, "u_temporal_mean.npy")
+    u_temp_s = _try_load(run_dir, "u_temporal_std.npy")
+    if u_temp_m is not None:
+        d["u_temporal_mean"] = u_temp_m
+        d["u_temporal_std"]  = u_temp_s if u_temp_s is not None else np.zeros_like(u_temp_m)
+    u_true_t = _try_load(run_dir, "u_true_temporal.npy")
+    if u_true_t is not None:
+        d["u_true_temporal"] = u_true_t
+
+    u_snap_m = _try_load(run_dir, "u_snapshots_mean.npy")
+    u_snap_s = _try_load(run_dir, "u_snapshots_std.npy")
+    if u_snap_m is not None:
+        d["u_snapshots_mean"] = u_snap_m
+        d["u_snapshots_std"]  = u_snap_s if u_snap_s is not None else np.zeros_like(u_snap_m)
+    u_true_s = _try_load(run_dir, "u_true_snapshots.npy")
+    if u_true_s is not None:
+        d["u_true_snapshots"] = u_true_s
+
+    t_coords = _try_load(run_dir, "t_coords.npy")
+    if t_coords is not None:
+        d["t_coords"] = t_coords
+    snap_yrs = _try_load(run_dir, "snapshot_years.npy")
+    if snap_yrs is not None:
+        d["snapshot_years"] = snap_yrs
+    mon_pts = _try_load(run_dir, "monitor_points.npy")
+    if mon_pts is not None:
+        d["monitor_points"] = mon_pts
+
+    return d if d else None
 
 
 def _build_solver_from_resolved_config(run_dir: str):
@@ -237,14 +339,20 @@ def _reconstruct_from_mc_weights(run_dir: str):
     u_true_snapshots = np.array([utens_true[t_i] for t_i in snap_t_idxs])
 
     ch_all = np.array(ch_all)
+    u_temporal_arr  = np.array(u_temporal_all)
+    u_snapshots_arr = np.array(u_snapshots_all)
     return {
         "ch_true": solver.chm,
         "ch_est_all": ch_all,
         "ch_est_mean": np.mean(ch_all, axis=0),
         "ch_est_std": np.std(ch_all, axis=0),
         "u_est_all": np.array(u_est_all),
-        "u_temporal_all": np.array(u_temporal_all),
-        "u_snapshots_all": np.array(u_snapshots_all),
+        "u_temporal_all": u_temporal_arr,
+        "u_temporal_mean": np.mean(u_temporal_arr, axis=0),
+        "u_temporal_std":  np.std( u_temporal_arr, axis=0),
+        "u_snapshots_all": u_snapshots_arr,
+        "u_snapshots_mean": np.mean(u_snapshots_arr, axis=0),
+        "u_snapshots_std":  np.std( u_snapshots_arr, axis=0),
         "u_true_temporal": u_true_temporal,
         "u_true_snapshots": u_true_snapshots,
         "t_coords": t_coords,
@@ -254,15 +362,35 @@ def _reconstruct_from_mc_weights(run_dir: str):
 
 
 def load_run_data(run_dir: str) -> dict:
-    """Load all relevant arrays from a single run directory."""
+    """Load all relevant arrays from a single run directory.
+
+    Loading priority
+    ----------------
+    1. Pre-saved field statistics (``batch_stats.npz`` or individual
+       ``ch_est_mean/std.npy``, ``u_temporal_mean/std.npy``, etc.) written by
+       ``run_batch.py``.  These files avoid any forward-solver recomputation.
+    2. If ``REBUILD_FROM_MC_WEIGHTS`` is True **and** the precomputed stats are
+       absent, reconstruct each MC realization from ``mc_weights.npy`` by
+       decoding coef → C → forward-solve U (slow but fully reproducible).
+    3. Fallback: load the per-MC ensemble arrays (``ch_est_all.npy``,
+       ``u_temporal_all.npy``, etc.) directly and compute mean/std on the fly.
+    """
     d = {}
 
+    # 1. Prefer pre-saved stats (fastest; no solver needed)
+    precomp = _load_from_precomputed_stats(run_dir)
+    if precomp is not None and ("ch_est_mean" in precomp or "u_temporal_mean" in precomp):
+        d.update(precomp)
+        return d
+
+    # 2. Optional: reconstruct from mc_weights (legacy fallback)
     if REBUILD_FROM_MC_WEIGHTS:
         recon = _reconstruct_from_mc_weights(run_dir)
         if recon is not None:
             d.update(recon)
             return d
 
+    # 3. Load per-MC ensemble arrays and derive mean/std on the fly
     ch_true = _try_load(run_dir, "ch_true.npy")
     if ch_true is not None:
         d["ch_true"] = ch_true
@@ -275,7 +403,6 @@ def load_run_data(run_dir: str) -> dict:
     else:
         ch_mean = _try_load(run_dir, "ch_est.npy")
         if ch_mean is not None:
-            d["ch_est_all"]  = ch_mean[np.newaxis]
             d["ch_est_mean"] = ch_mean
             d["ch_est_std"]  = np.zeros_like(ch_mean)
 
@@ -285,7 +412,8 @@ def load_run_data(run_dir: str) -> dict:
 
     u_temporal = _try_load(run_dir, "u_temporal_all.npy")
     if u_temporal is not None:
-        d["u_temporal_all"] = u_temporal
+        d["u_temporal_mean"] = np.mean(u_temporal, axis=0)
+        d["u_temporal_std"]  = np.std( u_temporal, axis=0)
 
     u_true_temp = _try_load(run_dir, "u_true_temporal.npy")
     if u_true_temp is not None:
@@ -293,7 +421,8 @@ def load_run_data(run_dir: str) -> dict:
 
     u_snaps = _try_load(run_dir, "u_snapshots_all.npy")
     if u_snaps is not None:
-        d["u_snapshots_all"] = u_snaps
+        d["u_snapshots_mean"] = np.mean(u_snaps, axis=0)
+        d["u_snapshots_std"]  = np.std( u_snaps, axis=0)
 
     u_true_snaps = _try_load(run_dir, "u_true_snapshots.npy")
     if u_true_snaps is not None:
@@ -332,11 +461,11 @@ def _run_colors(n: int):
 
 
 def _set_axis_labels(ax, xlabel, ylabel, title):
-    ax.set_xlabel(xlabel, fontsize=11)
-    ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_title(title,   fontsize=12)
+    ax.set_xlabel(xlabel, fontsize=13)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.set_title(title,   fontsize=14)
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=11)
 
 
 def plot_c_xsec(runs_data, labels, idx, axis, colors=None,
@@ -394,7 +523,11 @@ def plot_c_xsec(runs_data, labels, idx, axis, colors=None,
 
 def plot_u_temporal(runs_data, labels, pt_idx, colors=None,
                     band_k=BAND_K, save_path=None):
-    """Plot U temporal evolution (mean ± band_k·std) at monitor point *pt_idx*."""
+    """Plot U temporal evolution (mean ± band_k·std) at monitor point *pt_idx*.
+
+    Reads from pre-saved ``u_temporal_mean`` / ``u_temporal_std`` when available.
+    Falls back to computing mean/std from the ``u_temporal_all`` ensemble array.
+    """
     fig, ax = plt.subplots(figsize=FIGSIZE_XSEC, dpi=DPI)
     if colors is None:
         colors = _run_colors(len(runs_data))
@@ -403,20 +536,32 @@ def plot_u_temporal(runs_data, labels, pt_idx, colors=None,
     pt_info = ""
     any_data = False
     for data, lbl, col in zip(runs_data, labels, colors):
-        u_temporal = data.get("u_temporal_all")
-        t_coords   = data.get("t_coords")
-        if u_temporal is None or t_coords is None:
-            print(f"  [WARNING] No U temporal ensemble data for '{lbl}'.")
-            print(f"            (re-run experiments with current run_batch.py"
-                  f" to generate u_temporal_all.npy)")
+        t_coords = data.get("t_coords")
+
+        # Prefer precomputed mean/std; fall back to ensemble array
+        u_mean = data.get("u_temporal_mean")   # (n_pts, numt+1)
+        u_std  = data.get("u_temporal_std")    # (n_pts, numt+1)
+        if u_mean is None:
+            u_all = data.get("u_temporal_all")  # (N_mc, n_pts, numt+1)
+            if u_all is not None:
+                u_mean = np.mean(u_all, axis=0)
+                u_std  = np.std( u_all, axis=0)
+
+        if u_mean is None or t_coords is None:
+            print(f"  [WARNING] No U temporal data for '{lbl}'.")
+            print(f"            (re-run with current run_batch.py to generate"
+                  f" u_temporal_mean.npy / batch_stats.npz)")
             continue
-        n_mc, n_pts, numt1 = u_temporal.shape
+        if u_std is None:
+            u_std = np.zeros_like(u_mean)
+
+        n_pts, numt1 = u_mean.shape
         if pt_idx >= n_pts:
             continue
 
         t = t_coords[:numt1]
-        u_pt = u_temporal[:, pt_idx, :]
-        m, s = np.mean(u_pt, axis=0), np.std(u_pt, axis=0)
+        m = u_mean[pt_idx, :]
+        s = u_std[pt_idx,  :]
         any_data = True
 
         if not truth_plotted and "u_true_temporal" in data:
@@ -451,7 +596,11 @@ def plot_u_temporal(runs_data, labels, pt_idx, colors=None,
 
 def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
                    colors=None, band_k=BAND_K, save_path=None):
-    """Plot U spatial cross section (mean ± band_k·std) at fixed timestep."""
+    """Plot U spatial cross section (mean ± band_k·std) at fixed timestep.
+
+    Reads from pre-saved ``u_snapshots_mean`` / ``u_snapshots_std`` when
+    available.  Falls back to computing mean/std from ``u_snapshots_all``.
+    """
     fig, ax = plt.subplots(figsize=FIGSIZE_XSEC, dpi=DPI)
     if colors is None:
         colors = _run_colors(len(runs_data))
@@ -460,32 +609,45 @@ def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
     t_yr_str = ""
     any_data = False
     for data, lbl, col in zip(runs_data, labels, colors):
-        u_snaps    = data.get("u_snapshots_all")
         snap_years = data.get("snapshot_years")
         t_coords   = data.get("t_coords")
-        if u_snaps is None:
-            print(f"  [WARNING] No U snapshot ensemble data for '{lbl}'.")
-            print(f"            (re-run experiments with current run_batch.py"
-                  f" to generate u_snapshots_all.npy)")
-            continue
 
+        # Prefer precomputed mean/std; fall back to ensemble array
+        u_snap_mean = data.get("u_snapshots_mean")  # (n_snaps, nv+1, nh+1)
+        u_snap_std  = data.get("u_snapshots_std")   # (n_snaps, nv+1, nh+1)
+        if u_snap_mean is None:
+            u_snaps = data.get("u_snapshots_all")   # (N_mc, n_snaps, nv+1, nh+1)
+            if u_snaps is not None:
+                u_snap_mean = np.mean(u_snaps, axis=0)
+                u_snap_std  = np.std( u_snaps, axis=0)
+
+        if u_snap_mean is None:
+            print(f"  [WARNING] No U snapshot data for '{lbl}'.")
+            print(f"            (re-run with current run_batch.py to generate"
+                  f" u_snapshots_mean.npy / batch_stats.npz)")
+            continue
+        if u_snap_std is None:
+            u_snap_std = np.zeros_like(u_snap_mean)
+
+        # Find snapshot index closest to t_idx
+        n_snaps = u_snap_mean.shape[0]
         if snap_years is not None and t_coords is not None and len(t_coords) > 1:
             dt = t_coords[1] - t_coords[0]
             snap_t_idxs = [int(round(y / dt)) for y in snap_years]
             snap_i = min(range(len(snap_t_idxs)),
                          key=lambda i: abs(snap_t_idxs[i] - t_idx))
         else:
-            snap_i = min(t_idx, u_snaps.shape[1] - 1)
+            snap_i = min(t_idx, n_snaps - 1)
 
-        u_snap = u_snaps[:, snap_i]
-        nv, nh = u_snap.shape[1] - 1, u_snap.shape[2] - 1
+        nv = u_snap_mean.shape[1] - 1
+        nh = u_snap_mean.shape[2] - 1
         any_data = True
 
         if axis == "x":
             row_i  = min(fix_idx, nv)
             xs     = np.linspace(0, LH, nh + 1)
-            m      = np.mean(u_snap[:, row_i, :], axis=0)
-            s      = np.std( u_snap[:, row_i, :], axis=0)
+            m      = u_snap_mean[snap_i, row_i, :]
+            s      = u_snap_std[ snap_i, row_i, :]
             xlabel = "x (m)"
             if not truth_plotted and "u_true_snapshots" in data:
                 us = data["u_true_snapshots"]
@@ -496,8 +658,8 @@ def plot_u_spatial(runs_data, labels, t_idx, axis, fix_idx,
         else:
             col_i  = min(fix_idx, nh)
             xs     = np.linspace(0, LV, nv + 1)
-            m      = np.mean(u_snap[:, :, col_i], axis=0)
-            s      = np.std( u_snap[:, :, col_i], axis=0)
+            m      = u_snap_mean[snap_i, :, col_i]
+            s      = u_snap_std[ snap_i, :, col_i]
             xlabel = "z (m)"
             if not truth_plotted and "u_true_snapshots" in data:
                 us = data["u_true_snapshots"]
@@ -670,19 +832,25 @@ def plot_u_parallel(runs_data, labels, snap_year: float, save_path=None):
 
     truths, means, errors, t_labels = [], [], [], []
     for data, lbl in zip(runs_data, labels):
-        u_true_snaps = data.get("u_true_snapshots")    # (n_snaps, nv+1, nh+1)
-        u_snaps_all  = data.get("u_snapshots_all")     # (N_mc, n_snaps, nv+1, nh+1)
-        snap_years   = data.get("snapshot_years")
+        u_true_snaps  = data.get("u_true_snapshots")    # (n_snaps, nv+1, nh+1)
+        u_snaps_mean  = data.get("u_snapshots_mean")    # (n_snaps, nv+1, nh+1)
+        snap_years    = data.get("snapshot_years")
 
-        if u_true_snaps is None or u_snaps_all is None:
+        # Fall back to computing mean from per-MC ensemble if pre-saved mean absent
+        if u_snaps_mean is None:
+            u_snaps_all = data.get("u_snapshots_all")   # (N_mc, n_snaps, nv+1, nh+1)
+            if u_snaps_all is not None:
+                u_snaps_mean = np.mean(u_snaps_all, axis=0)
+
+        if u_true_snaps is None or u_snaps_mean is None:
             print(f"  [WARNING] Missing U snapshots for '{lbl}' – skipping row.")
             truths.append(None); means.append(None)
             errors.append(None); t_labels.append(lbl)
             continue
 
         snap_i = _find_snap_idx(snap_years, snap_year)
-        truth  = u_true_snaps[snap_i]                     # (nv+1, nh+1)
-        mean   = np.mean(u_snaps_all[:, snap_i], axis=0)  # (nv+1, nh+1)
+        truth  = u_true_snaps[snap_i]       # (nv+1, nh+1)
+        mean   = u_snaps_mean[snap_i]       # (nv+1, nh+1)
         err    = _field_error(truth, mean, ERROR_MODE)
 
         t_yr_actual = float(snap_years[snap_i]) if snap_years is not None else snap_year
