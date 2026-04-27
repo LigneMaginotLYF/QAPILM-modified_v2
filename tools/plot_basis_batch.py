@@ -54,6 +54,21 @@ import matplotlib.colors as mcolors
 from matplotlib.cm import get_cmap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+# ---------------------------------------------------------------------------
+# Global plot style – Times New Roman, larger fonts for readability
+# ---------------------------------------------------------------------------
+matplotlib.rcParams.update({
+    "font.family":       "serif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "font.size":         13,
+    "axes.titlesize":    14,
+    "axes.labelsize":    13,
+    "xtick.labelsize":   11,
+    "ytick.labelsize":   11,
+    "legend.fontsize":   11,
+    "figure.titlesize":  15,
+})
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qapilm_rect import (
     ProblemConfig, BasisConfig, ModelConfig, SolverConfig, RunConfig,
@@ -151,7 +166,34 @@ def _try_load(run_dir: str, *filenames):
     return None
 
 
+def _resolve_filedir(filedir: str, run_dir: str) -> str:
+    """
+    Try to resolve a (possibly relative) filedir to a valid absolute path.
+    Search order: as-is → relative to run_dir → relative to each ancestor.
+    Returns the first existing directory, or os.path.abspath of original.
+    """
+    if os.path.isabs(filedir) and os.path.isdir(filedir):
+        return filedir
+    candidates = [filedir, os.path.join(run_dir, filedir)]
+    parent = Path(run_dir).parent
+    while parent != parent.parent:
+        candidates.append(os.path.join(str(parent), filedir))
+        parent = parent.parent
+    for cand in candidates:
+        if os.path.isdir(cand):
+            return str(Path(cand).resolve())
+    return os.path.abspath(filedir)
+
+
 def _build_solver_from_resolved_config(run_dir: str):
+    """
+    Rebuild a RectangularQAPILM solver from run_config_resolved.json.
+
+    Two-pass strategy:
+    1. Try with original regen_fluc (may need CSV files).
+    2. If that fails, retry with regen_fluc=True; override solver.chm from
+       the saved ch_true.npy so ground-truth plots are still correct.
+    """
     cfg_path = os.path.join(run_dir, "run_config_resolved.json")
     if not os.path.exists(cfg_path):
         return None, None
@@ -162,20 +204,45 @@ def _build_solver_from_resolved_config(run_dir: str):
         print(f"  [WARNING] Failed to parse '{cfg_path}': {exc}")
         return None, None
 
-    try:
-        pconf = ProblemConfig(**cfg.get("problem", {}))
-        bconf = BasisConfig(**cfg.get("basis", {}))
-        mconf = ModelConfig(**cfg.get("model", {}))
-        sconf = SolverConfig(**cfg.get("solver", {}))
-        rvals = dict(cfg.get("run", {}))
-        rvals["results_dir"] = run_dir
-        rvals["save_losses"] = False
-        rconf = RunConfig(**rvals)
-        solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
-    except Exception as exc:
-        print(f"  [WARNING] Failed to initialize solver for '{run_dir}': {exc}")
-        return None, None
-    return solver, cfg
+    p_raw = dict(cfg.get("problem", {}))
+    filedir = p_raw.get("filedir", "")
+    if filedir:
+        p_raw["filedir"] = _resolve_filedir(filedir, run_dir)
+
+    bconf_raw = cfg.get("basis", {})
+    mconf_raw = cfg.get("model", {})
+    sconf_raw = cfg.get("solver", {})
+    rvals_raw = dict(cfg.get("run", {}))
+    rvals_raw["results_dir"] = run_dir
+    rvals_raw["save_losses"]  = False
+
+    for regen_attempt in (False, True):
+        try:
+            p_attempt = dict(p_raw)
+            if regen_attempt:
+                p_attempt["regen_fluc"] = True
+            pconf = ProblemConfig(**p_attempt)
+            bconf = BasisConfig(**bconf_raw)
+            mconf = ModelConfig(**mconf_raw)
+            sconf = SolverConfig(**sconf_raw)
+            rconf = RunConfig(**rvals_raw)
+            solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
+            if regen_attempt:
+                ch_true_path = os.path.join(run_dir, "ch_true.npy")
+                if os.path.exists(ch_true_path):
+                    try:
+                        solver.chm = np.load(ch_true_path, allow_pickle=False)
+                    except Exception:
+                        pass
+            return solver, cfg
+        except Exception as exc:
+            if not regen_attempt:
+                print(f"  [DEBUG] Solver init failed, retrying with regen_fluc=True "
+                      f"(run_dir='{os.path.basename(run_dir)}'): {exc}")
+            else:
+                print(f"  [WARNING] Failed to initialize solver for '{run_dir}': {exc}")
+
+    return None, None
 
 
 def _reconstruct_from_mc_weights(run_dir: str):
