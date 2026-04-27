@@ -338,6 +338,7 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
 
     # Clamp ukt indices to valid range
     ukt_arr = np.clip(ukt_arr, 0, numt)
+    obs_last_t = int(np.max(ukt_arr))
 
     uk  = utens[ukt_arr, :, :]   # shape: (T, numv+1, numh+1)
     chk = solver.chm              # ground-truth permeability field
@@ -384,10 +385,9 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         ch_est = softplus(m_est)
 
         # Run forward solver with estimated C to obtain estimated U field.
-        # Pass u0 as a scalar so forward_solver's udeg computation is safe.
-        utens_est, _ = solver.forward_solver(ch_est, numt, pconf.u0, top, bot, left, right)
+        utens_est, _ = solver.forward_solver(ch_est, numt, u0_mat, top, bot, left, right)
         # U snapshot at the last observation time
-        u_est_snap = utens_est[ukt_arr[-1]].copy()
+        u_est_snap = utens_est[obs_last_t].copy()
 
         # Extract temporal traces at monitor points: (n_pts, numt+1)
         u_temporal_run = np.array(
@@ -455,6 +455,34 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # ------------------------------------------------------------------
     # Save run metadata (for batch plotting scripts and reproducibility)
     # ------------------------------------------------------------------
+    # Persist the fully resolved, run-specific configuration for deterministic
+    # post-hoc reconstruction in plotting tools.  Keys:
+    #   - problem/basis/model/solver/run: exact dataclass values used in run
+    #   - measurements: u/C observation indices and u observation times (ukt)
+    #   - plot_output: monitor points and requested snapshot years
+    # This enables replay of each MC realization from mc_weights.npy as:
+    # coef -> decoded C field -> forward-solved U field.
+    resolved_cfg = {
+        "problem": asdict(pconf),
+        "basis": asdict(bconf),
+        "model": asdict(mconf),
+        "solver": asdict(sconf),
+        "run": asdict(rconf),
+        "measurements": {
+            "ukmat": [list(pt) for pt in ukmat_idx],
+            "chkmat": [list(pt) for pt in chkmat_idx],
+            "ukt": ukt_arr.tolist(),
+        },
+        "plot_output": {
+            "snapshot_years": list(snapshot_years),
+            "monitor_points": [list(pt) for pt in monitor_pts_clamped],
+        },
+    }
+    resolved_cfg_path = os.path.join(run_dir, "run_config_resolved.json")
+    with open(resolved_cfg_path, "w", encoding="utf-8") as fh:
+        json.dump(resolved_cfg, fh, indent=2)
+    print(f"  Saved resolved config → {resolved_cfg_path}")
+
     # The "mean estimate" is the pointwise mean of all MC C (or U) fields.
     # The confidence band is mean ± band_k * std; default band_k = 1.0 (68 %).
     run_metadata = {

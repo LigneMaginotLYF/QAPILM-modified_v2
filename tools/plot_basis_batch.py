@@ -41,7 +41,10 @@ Usage
 """
 
 import os
+import json
 import glob as _glob
+import sys
+from pathlib import Path
 import numpy as np
 
 import matplotlib
@@ -50,6 +53,12 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.cm import get_cmap
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from qapilm_rect import (
+    ProblemConfig, BasisConfig, ModelConfig, SolverConfig, RunConfig,
+    RectangularQAPILM, softplus,
+)
 
 
 # =============================================================================
@@ -117,6 +126,11 @@ DPI              = 150
 
 OUTPUT_DIR = "./plots"
 
+# --- MC reconstruction behavior ------------------------------------------------
+# If True, load mc_weights.npy + run_config_resolved.json and reconstruct each
+# MC realization as: coef -> C -> forward solve U, then compute mean/std bands.
+REBUILD_FROM_MC_WEIGHTS = True
+
 # =============================================================================
 # END OF TUNABLE PARAMETERS
 # =============================================================================
@@ -132,14 +146,122 @@ def _try_load(run_dir: str, *filenames):
         if os.path.exists(path):
             try:
                 return np.load(path, allow_pickle=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"  [WARNING] Failed to load '{path}': {exc}")
     return None
+
+
+def _build_solver_from_resolved_config(run_dir: str):
+    cfg_path = os.path.join(run_dir, "run_config_resolved.json")
+    if not os.path.exists(cfg_path):
+        return None, None
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except Exception as exc:
+        print(f"  [WARNING] Failed to parse '{cfg_path}': {exc}")
+        return None, None
+
+    try:
+        pconf = ProblemConfig(**cfg.get("problem", {}))
+        bconf = BasisConfig(**cfg.get("basis", {}))
+        mconf = ModelConfig(**cfg.get("model", {}))
+        sconf = SolverConfig(**cfg.get("solver", {}))
+        rvals = dict(cfg.get("run", {}))
+        rvals["results_dir"] = run_dir
+        rvals["save_losses"] = False
+        rconf = RunConfig(**rvals)
+        solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
+    except Exception as exc:
+        print(f"  [WARNING] Failed to initialize solver for '{run_dir}': {exc}")
+        return None, None
+    return solver, cfg
+
+
+def _reconstruct_from_mc_weights(run_dir: str):
+    mc_weights = _try_load(run_dir, "mc_weights.npy")
+    if mc_weights is None:
+        return None
+
+    solver, cfg = _build_solver_from_resolved_config(run_dir)
+    if solver is None:
+        print(f"  [WARNING] Cannot reconstruct MC realizations for '{run_dir}' "
+              f"(missing/invalid run_config_resolved.json).")
+        return None
+
+    mc_weights = np.asarray(mc_weights, dtype=np.float64)
+    if mc_weights.ndim == 1:
+        mc_weights = mc_weights[np.newaxis, :]
+
+    numt = solver.ilim
+    top, bot, left, right = solver.p.bcs
+    u0_mat = np.ones((solver.numv + 1, solver.numh + 1), dtype=np.float64) * solver.p.u0
+
+    meas = cfg.get("measurements", {})
+    ukt = np.asarray(meas.get("ukt", [numt]), dtype=int)
+    if ukt.size == 0:
+        ukt = np.array([numt], dtype=int)
+    ukt = np.clip(ukt, 0, numt)
+    obs_last_t = int(np.max(ukt))
+
+    plot_cfg = cfg.get("plot_output", {})
+    monitor_points = [tuple(pt) for pt in plot_cfg.get("monitor_points", [[10, 25], [5, 10]])]
+    monitor_points = [
+        (min(int(pt[0]), solver.numv), min(int(pt[1]), solver.numh))
+        for pt in monitor_points
+    ]
+    snapshot_years_req = list(plot_cfg.get("snapshot_years", [0.1, 1.0, 2.0]))
+    t_coords = np.arange(numt + 1) * solver.dt
+    snap_t_idxs = [min(int(round(y / solver.dt)), numt) for y in snapshot_years_req]
+    snap_years_actual = np.array([t_coords[i] for i in snap_t_idxs], dtype=np.float64)
+
+    ch_all = []
+    u_est_all = []
+    u_temporal_all = []
+    u_snapshots_all = []
+    n_mc = mc_weights.shape[0]
+    print(f"  Reconstructing {n_mc} MC realization(s) for '{os.path.basename(run_dir)}' ...")
+    for mc_idx, coef in enumerate(mc_weights, start=1):
+        m_est = solver.vec2mat2(solver.basese @ coef)
+        ch_est = softplus(m_est)
+        utens_est, _ = solver.forward_solver(ch_est, numt, u0_mat, top, bot, left, right)
+        ch_all.append(ch_est)
+        u_est_all.append(utens_est[obs_last_t].copy())
+        u_temporal_all.append(np.array([utens_est[:, r, c] for r, c in monitor_points]))
+        u_snapshots_all.append(np.array([utens_est[t_i] for t_i in snap_t_idxs]))
+        if mc_idx == n_mc or (mc_idx % max(1, n_mc // 5) == 0):
+            print(f"    progress: {mc_idx}/{n_mc}")
+
+    utens_true, _ = solver.forward_solver(solver.chm, numt, u0_mat, top, bot, left, right)
+    u_true_temporal = np.array([utens_true[:, r, c] for r, c in monitor_points])
+    u_true_snapshots = np.array([utens_true[t_i] for t_i in snap_t_idxs])
+
+    ch_all = np.array(ch_all)
+    return {
+        "ch_true": solver.chm,
+        "ch_est_all": ch_all,
+        "ch_est_mean": np.mean(ch_all, axis=0),
+        "ch_est_std": np.std(ch_all, axis=0),
+        "u_est_all": np.array(u_est_all),
+        "u_temporal_all": np.array(u_temporal_all),
+        "u_snapshots_all": np.array(u_snapshots_all),
+        "u_true_temporal": u_true_temporal,
+        "u_true_snapshots": u_true_snapshots,
+        "t_coords": t_coords,
+        "snapshot_years": snap_years_actual,
+        "monitor_points": np.array(monitor_points, dtype=int),
+    }
 
 
 def load_run_data(run_dir: str) -> dict:
     """Load all relevant arrays from a single run directory."""
     d = {}
+
+    if REBUILD_FROM_MC_WEIGHTS:
+        recon = _reconstruct_from_mc_weights(run_dir)
+        if recon is not None:
+            d.update(recon)
+            return d
 
     ch_true = _try_load(run_dir, "ch_true.npy")
     if ch_true is not None:
