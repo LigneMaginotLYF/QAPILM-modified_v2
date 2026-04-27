@@ -455,6 +455,27 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # ------------------------------------------------------------------
     # Save run metadata (for batch plotting scripts and reproducibility)
     # ------------------------------------------------------------------
+    resolved_cfg = {
+        "problem": asdict(pconf),
+        "basis": asdict(bconf),
+        "model": asdict(mconf),
+        "solver": asdict(sconf),
+        "run": asdict(rconf),
+        "measurements": {
+            "ukmat": [list(pt) for pt in ukmat_idx],
+            "chkmat": [list(pt) for pt in chkmat_idx],
+            "ukt": ukt_arr.tolist(),
+        },
+        "plot_output": {
+            "snapshot_years": list(snapshot_years),
+            "monitor_points": [list(pt) for pt in monitor_pts_clamped],
+        },
+    }
+    resolved_cfg_path = os.path.join(run_dir, "run_config_resolved.json")
+    with open(resolved_cfg_path, "w", encoding="utf-8") as fh:
+        json.dump(resolved_cfg, fh, indent=2)
+    print(f"  Saved resolved config → {resolved_cfg_path}")
+
     # The "mean estimate" is the pointwise mean of all MC C (or U) fields.
     # The confidence band is mean ± band_k * std; default band_k = 1.0 (68 %).
     run_metadata = {
