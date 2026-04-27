@@ -338,6 +338,7 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
 
     # Clamp ukt indices to valid range
     ukt_arr = np.clip(ukt_arr, 0, numt)
+    obs_last_t = int(np.max(ukt_arr))
 
     uk  = utens[ukt_arr, :, :]   # shape: (T, numv+1, numh+1)
     chk = solver.chm              # ground-truth permeability field
@@ -384,10 +385,9 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
         ch_est = softplus(m_est)
 
         # Run forward solver with estimated C to obtain estimated U field.
-        # Pass u0 as a scalar so forward_solver's udeg computation is safe.
-        utens_est, _ = solver.forward_solver(ch_est, numt, pconf.u0, top, bot, left, right)
+        utens_est, _ = solver.forward_solver(ch_est, numt, u0_mat, top, bot, left, right)
         # U snapshot at the last observation time
-        u_est_snap = utens_est[ukt_arr[-1]].copy()
+        u_est_snap = utens_est[obs_last_t].copy()
 
         # Extract temporal traces at monitor points: (n_pts, numt+1)
         u_temporal_run = np.array(
