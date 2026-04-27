@@ -663,7 +663,6 @@ class RectangularQAPILM:
         nb = len(self.basese[0])
         tmax = int(np.max(ukt))
         t_to_obs_idx = {int(t): idx for idx, t in enumerate(ukt.tolist())}
-        t_set = set(t_to_obs_idx.keys())
 
         coefe = np.random.randn(nb) * 0.2
         print('random init:', coefe)
@@ -701,7 +700,7 @@ class RectangularQAPILM:
                 u[:,-1] = right * u[:,-2]
                 u[0,:]  = top   * u[1,:]
                 u[-1,:] = bot   * u[-2,:]
-                t_next = i + 1
+                t_current = i + 1
 
                 # update sensitivities for each basis (no time history)
                 for k in range(nb):
@@ -724,8 +723,8 @@ class RectangularQAPILM:
                     s[-1,:,k] = bot   * s[-2,:,k]
 
                 # accumulate loss only at measurement times
-                if t_next in t_set:
-                    idx = t_to_obs_idx[t_next]
+                if t_current in t_to_obs_idx:
+                    idx = t_to_obs_idx[t_current]
                     for pt in ukmat:
                         uiloss, uigrad = epsilon_insensitive_loss_numpy(u[pt[0], pt[1]], uk[idx, pt[0], pt[1]], self.m.epsilon)
                         loss_t += np.mean(uiloss) * self.m.lamu
@@ -777,7 +776,6 @@ class RectangularQAPILM:
 
         tmax = int(np.max(ukt))
         t_to_obs_idx = {int(t): idx for idx, t in enumerate(ukt.tolist())}
-        t_set = set(t_to_obs_idx.keys())
 
         for j in range(self.m.itol):
             m = self.vec2mat2(self.basese @ coefe)
@@ -832,9 +830,9 @@ class RectangularQAPILM:
                     s_hist[i+1,:,:,k] = sn
 
                 # preserve existing time-index matching semantics
-                t_next = i + 1
-                if t_next in t_set:
-                    idx = t_to_obs_idx[t_next]
+                t_current = i + 1
+                if t_current in t_to_obs_idx:
+                    idx = t_to_obs_idx[t_current]
                     for pt in ukmat:
                         uiloss, uigrad = epsilon_insensitive_loss_numpy(u_hist[i+1, pt[0], pt[1]], uk[idx, pt[0], pt[1]], self.m.epsilon)
                         loss_t += np.mean(uiloss) * self.m.lamu

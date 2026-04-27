@@ -455,9 +455,13 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # ------------------------------------------------------------------
     # Save run metadata (for batch plotting scripts and reproducibility)
     # ------------------------------------------------------------------
-    # Persist the fully resolved, run-specific configuration so downstream
-    # plotting utilities can deterministically reconstruct each MC realization
-    # from mc_weights.npy as: coef -> C -> forward-solved U.
+    # Persist the fully resolved, run-specific configuration for deterministic
+    # post-hoc reconstruction in plotting tools.  Keys:
+    #   - problem/basis/model/solver/run: exact dataclass values used in run
+    #   - measurements: u/C observation indices and u observation times (ukt)
+    #   - plot_output: monitor points and requested snapshot years
+    # This enables replay of each MC realization from mc_weights.npy as:
+    # coef -> decoded C field -> forward-solved U field.
     resolved_cfg = {
         "problem": asdict(pconf),
         "basis": asdict(bconf),
