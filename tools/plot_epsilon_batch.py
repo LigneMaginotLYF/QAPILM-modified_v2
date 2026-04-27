@@ -142,8 +142,8 @@ def _try_load(run_dir: str, *filenames):
             try:
                 arr = np.load(path, allow_pickle=False)
                 return arr
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"  [WARNING] Failed to load '{path}': {exc}")
     return None
 
 
@@ -154,7 +154,8 @@ def _build_solver_from_resolved_config(run_dir: str):
     try:
         with open(cfg_path, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-    except Exception:
+    except Exception as exc:
+        print(f"  [WARNING] Failed to parse '{cfg_path}': {exc}")
         return None, None
 
     try:
@@ -167,7 +168,8 @@ def _build_solver_from_resolved_config(run_dir: str):
         rvals["save_losses"] = False
         rconf = RunConfig(**rvals)
         solver = RectangularQAPILM(pconf, bconf, mconf, sconf, rconf)
-    except Exception:
+    except Exception as exc:
+        print(f"  [WARNING] Failed to initialize solver for '{run_dir}': {exc}")
         return None, None
     return solver, cfg
 
