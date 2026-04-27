@@ -219,7 +219,9 @@ def _reconstruct_from_mc_weights(run_dir: str):
     u_est_all = []
     u_temporal_all = []
     u_snapshots_all = []
-    for coef in mc_weights:
+    n_mc = mc_weights.shape[0]
+    print(f"  Reconstructing {n_mc} MC realization(s) for '{os.path.basename(run_dir)}' ...")
+    for mc_idx, coef in enumerate(mc_weights, start=1):
         m_est = solver.vec2mat2(solver.basese @ coef)
         ch_est = softplus(m_est)
         utens_est, _ = solver.forward_solver(ch_est, numt, u0_mat, top, bot, left, right)
@@ -227,6 +229,8 @@ def _reconstruct_from_mc_weights(run_dir: str):
         u_est_all.append(utens_est[obs_last_t].copy())
         u_temporal_all.append(np.array([utens_est[:, r, c] for r, c in monitor_points]))
         u_snapshots_all.append(np.array([utens_est[t_i] for t_i in snap_t_idxs]))
+        if mc_idx == n_mc or (mc_idx % max(1, n_mc // 5) == 0):
+            print(f"    progress: {mc_idx}/{n_mc}")
 
     utens_true, _ = solver.forward_solver(solver.chm, numt, u0_mat, top, bot, left, right)
     u_true_temporal = np.array([utens_true[:, r, c] for r, c in monitor_points])

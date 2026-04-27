@@ -455,6 +455,9 @@ def run_one(cfg: dict, run_name: str, base_results_dir: str, coeffs_csv_path: st
     # ------------------------------------------------------------------
     # Save run metadata (for batch plotting scripts and reproducibility)
     # ------------------------------------------------------------------
+    # Persist the fully resolved, run-specific configuration so downstream
+    # plotting utilities can deterministically reconstruct each MC realization
+    # from mc_weights.npy as: coef -> C -> forward-solved U.
     resolved_cfg = {
         "problem": asdict(pconf),
         "basis": asdict(bconf),
