@@ -132,9 +132,21 @@ results/
     QAPILM_Eps_loss.npy      # loss curve for N_mc=1; for N_mc>1: QAPILM_Eps_loss_mc000.npy … mc{N_mc-1:03d}.npy
     mc_weights.npy           # all per-MC weight vectors, shape (N_mc, nb)  [NOT averaged]
     coefe.npy                # single-run weight vector (only written when N_mc == 1)
-    ch_est.npy               # mean C field  = mean over all N_mc realizations
+
+    # ── Precomputed field statistics (primary input for batch plotting tools) ──
+    batch_stats.npz          # single-file NPZ bundle: all stats + grids (see below)
+    ch_est.npy               # mean C field across MC realizations, shape (nv+1, nh+1)
+    ch_est_std.npy           # std  C field across MC realizations, shape (nv+1, nh+1)
+    u_temporal_mean.npy      # mean U at monitor pts over time,  shape (n_pts, numt+1)
+    u_temporal_std.npy       # std  U at monitor pts over time,  shape (n_pts, numt+1)
+    u_snapshots_mean.npy     # mean U at snapshot years, shape (n_snaps, nv+1, nh+1)
+    u_snapshots_std.npy      # std  U at snapshot years, shape (n_snaps, nv+1, nh+1)
+    x_coords.npy             # horizontal grid positions in metres, shape (nh+1,)
+    z_coords.npy             # vertical   grid positions in metres, shape (nv+1,)
+
+    # ── Per-MC ensemble arrays (retained for backward compatibility) ──────────
     ch_est_all.npy           # all individual MC C fields, shape (N_mc, nv+1, nh+1)
-    u_mean_est.npy           # mean U at last observation time (mean over MC realizations)
+    u_mean_est.npy           # mean U at last observation time, shape (nv+1, nh+1)
     u_est_all.npy            # all individual MC U snapshots, shape (N_mc, nv+1, nh+1)
     u_temporal_all.npy       # U at monitor points over time, shape (N_mc, n_pts, numt+1)
     u_snapshots_all.npy      # U at snapshot years, shape (N_mc, n_snaps, nv+1, nh+1)
@@ -144,12 +156,36 @@ results/
     snapshot_years.npy       # years corresponding to u_*_snapshots.npy
     monitor_points.npy       # [row, col] indices of monitor points, shape (n_pts, 2)
     ch_true.npy              # ground-truth C field
+
     triplot_C.png            # three-panel comparison plot (mean C field)
     run_metadata.json        # human-readable run settings and file descriptions
+    run_config_resolved.json # fully resolved configuration (used for MC replay)
   eps_0.05_20250101_120100/
     ...
   coeffs_batch.csv           # summary table: one row per run
 ```
+
+#### `batch_stats.npz` contents
+
+The NPZ bundle contains all arrays needed for confidence-band plots without
+running any solver:
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `ch_true` | `(nv+1, nh+1)` | Ground-truth C field |
+| `ch_est_mean` | `(nv+1, nh+1)` | Mean C field across MC realizations |
+| `ch_est_std` | `(nv+1, nh+1)` | Std of C field across MC realizations |
+| `u_temporal_mean` | `(n_pts, numt+1)` | Mean U at monitor points over time |
+| `u_temporal_std` | `(n_pts, numt+1)` | Std of U at monitor points over time |
+| `u_true_temporal` | `(n_pts, numt+1)` | Truth U at monitor points over time |
+| `u_snapshots_mean` | `(n_snaps, nv+1, nh+1)` | Mean U at snapshot years |
+| `u_snapshots_std` | `(n_snaps, nv+1, nh+1)` | Std of U at snapshot years |
+| `u_true_snapshots` | `(n_snaps, nv+1, nh+1)` | Truth U at snapshot years |
+| `x_coords` | `(nh+1,)` | Horizontal grid positions (m) |
+| `z_coords` | `(nv+1,)` | Vertical grid positions (m) |
+| `t_coords` | `(numt+1,)` | Physical time axis (years) |
+| `snapshot_years` | `(n_snaps,)` | Actual snapshot years |
+| `monitor_points` | `(n_pts, 2)` | `[row, col]` indices of monitor points |
 
 `coeffs_batch.csv` contains columns for `run_name`, `N_mc`, `basis_type`,
 `epsilon`, `regen_fluc`, `fluc_seed`, `Rcv`, `final_loss`, `cos_sim`,
@@ -201,6 +237,27 @@ single curve (std = 0).
 
 ## Batch plotting scripts
 
+### Data loading priority
+
+Both batch plotting scripts (`tools/plot_epsilon_batch.py` and
+`tools/plot_basis_batch.py`) use the following three-tier loading priority for
+each run directory, stopping at the first tier that succeeds:
+
+1. **Pre-saved statistics** (`batch_stats.npz` or individual `*_mean.npy` /
+   `*_std.npy` files) — fastest path; no forward solver or decoder needed.
+   Written by the current `run_batch.py` for every completed run.
+2. **MC-weight reconstruction** (only when `REBUILD_FROM_MC_WEIGHTS = True`) —
+   loads `mc_weights.npy` + `run_config_resolved.json`, decodes each weight
+   vector to a C field, runs the forward solver for each MC realization, then
+   computes mean/std.  Slow but fully reproducible.
+3. **Per-MC ensemble arrays** (`ch_est_all.npy`, `u_temporal_all.npy`, etc.) —
+   legacy fallback; computes mean/std directly from the stored per-MC fields.
+
+> **Default behaviour**: `REBUILD_FROM_MC_WEIGHTS = False`.
+> The plotting scripts will read the precomputed statistics saved by `run_batch.py`.
+> Set `REBUILD_FROM_MC_WEIGHTS = True` only for runs produced by older versions
+> of the code that lack `batch_stats.npz` and `*_std.npy` files.
+
 ### `tools/plot_epsilon_batch.py`
 
 Reads run directories from a results folder and superimposes confidence
@@ -225,17 +282,12 @@ All tunable parameters are at the top of the script:
 | `U_MONITOR_PT_IDX_1/2` | Indices into the saved `monitor_points` array |
 | `U_SPATIAL_T_IDX` | Timestep index for spatial mode |
 | `BAND_K` | Confidence-band multiplier (default `1.0` → ±1σ ≈ 68 % interval) |
+| `REBUILD_FROM_MC_WEIGHTS` | `False` (default): read pre-saved stats; `True`: reconstruct from mc_weights |
 | `OUTPUT_DIR` | Output folder for saved PNG files |
 
 ```bash
 python tools/plot_epsilon_batch.py
 ```
-
-The U-field plots require that run directories contain `u_temporal_all.npy`
-(for temporal mode) or `u_snapshots_all.npy` (for spatial mode), both
-created by `run_batch.py` when `monte_carlo.N_mc ≥ 1`.  If these files are
-absent (e.g. runs generated by an older version), re-run the experiments with
-the current `run_batch.py`.
 
 For single-run results the confidence band collapses to a single line.
 
