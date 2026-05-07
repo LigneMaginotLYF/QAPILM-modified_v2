@@ -52,7 +52,7 @@ class BasisConfig:
     #    "dct"       – discrete cosine  [cos(π k x), cos(π k z)]
     #    "legendre"  – Legendre polynomials  [P_k(x), P_k(z)]
     #    "chebyshev" – Chebyshev polynomials of the first kind  [T_k(x), T_k(z)]
-    #    "wavelet"   – Haar wavelets
+    #    "wavelet"   – Haar / Coiflet / biorthogonal wavelets (axis-wise selectable)
     #    "rbf"       – 1-D Gaussian RBFs along x and z separately
     #    "bspline"   – uniform cubic B-splines along x and z separately
     #
@@ -65,9 +65,19 @@ class BasisConfig:
     # Number of sine/DCT/Legendre/Chebyshev terms per axis
     orderx: int = 1
     orderz: int = 3
-    # Haar wavelet decomposition levels (used by wavelet)
+    # Wavelet decomposition levels (used by wavelet)
     wav_levels_x: int = 2
     wav_levels_z: int = 2
+    # Wavelet family and order per axis (used by wavelet):
+    #   family: "haar" | "coif" | "bior"
+    #   order:
+    #     haar -> ignored (kept for schema consistency)
+    #     coif -> N in "coifN" (PyWavelets)
+    #     bior -> integer mapped to a supported "biorNr.Nd" name (see _BIOR_ORDER_MAP)
+    wav_family_x: str = "haar"
+    wav_family_z: str = "haar"
+    wav_order_x: int = 1
+    wav_order_z: int = 1
     # RBF: number of Gaussian RBF centres per axis and shape parameter
     rbf_centers_x: int = 5
     rbf_centers_z: int = 5
@@ -245,6 +255,7 @@ class BasisFactory:
         self.p = pconf
         self.b = bconf
         self._components = _parse_basis_type(bconf.type)
+        self._wavelet_axis_cache = {}
 
     # ------------------------------------------------------------------
     # Per-component builders  (normalised coords x, z ∈ [0,1])
@@ -327,6 +338,139 @@ class BasisFactory:
 
     def _haar_size(self, levels):
         return 1 + sum(2**lev for lev in range(1, levels + 1))
+
+    _BIOR_ORDER_MAP = {
+        1: "1.1",
+        2: "1.3",
+        3: "1.5",
+        4: "2.2",
+        5: "2.4",
+        6: "2.6",
+        7: "2.8",
+        8: "3.1",
+        9: "3.3",
+        10: "3.5",
+        11: "3.7",
+        12: "3.9",
+        13: "4.4",
+        14: "5.5",
+        15: "6.8",
+    }
+    # Match the solver-grid endpoint inclusion convention used elsewhere
+    # (np.arange(0, L + 0.001, dL)).
+    _GRID_ENDPOINT_EPS = 0.001
+    # PyWavelets wavefun() decomposition level for sampled interpolation tables.
+    _WAVEFUN_SAMPLE_LEVEL = 8
+    # np.gradient(edge_order=2) needs at least 3 samples along the axis.
+    _MIN_SAMPLES_FOR_EDGE_ORDER2 = 3
+
+    def _wavelet_name(self, family, order):
+        fam = str(family).strip().lower()
+        if fam == "haar":
+            return "haar"
+        if fam == "coif":
+            if int(order) < 1:
+                raise ValueError(
+                    f"Invalid coif order {order}. Use a positive integer "
+                    "(typically 1..17 in PyWavelets)."
+                )
+            return f"coif{int(order)}"
+        if fam == "bior":
+            if int(order) not in self._BIOR_ORDER_MAP:
+                raise ValueError(
+                    f"Unsupported bior order {order}. "
+                    f"Supported integer orders: {sorted(self._BIOR_ORDER_MAP)}"
+                )
+            return f"bior{self._BIOR_ORDER_MAP[int(order)]}"
+        raise ValueError(
+            f"Unsupported wavelet family {family!r}. "
+            "Use one of: 'haar', 'coif', 'bior'."
+        )
+
+    def _sample_pywt_mother(self, wavelet_name):
+        try:
+            import pywt
+        except ImportError as exc:
+            raise ImportError(
+                "PyWavelets is required for non-Haar wavelets. "
+                "Install it with: pip install PyWavelets"
+            ) from exc
+        wavelet = pywt.Wavelet(wavelet_name)
+        wf = wavelet.wavefun(level=self._WAVEFUN_SAMPLE_LEVEL)
+        if len(wf) == 3:
+            _, psi, x = wf
+        elif len(wf) == 5:
+            _, _, _, psi, x = wf
+        else:
+            raise ValueError(
+                f"Unexpected wavefun output for wavelet {wavelet_name!r}: len={len(wf)}"
+            )
+        return np.asarray(x, dtype=float), np.asarray(psi, dtype=float)
+
+    def _build_nonhaar_bank(self, grid_norm, levels, wavelet_name):
+        xw, psi = self._sample_pywt_mother(wavelet_name)
+        vals = [np.ones_like(grid_norm)]
+        for lev in range(1, levels + 1):
+            num = 2 ** lev
+            scale = float(num)
+            for k in range(num):
+                arg = scale * grid_norm - float(k)
+                vals.append(np.interp(arg, xw, psi, left=0.0, right=0.0))
+        return np.asarray(vals, dtype=float)
+
+    def _get_wavelet_axis_cache(self, axis):
+        if axis in self._wavelet_axis_cache:
+            return self._wavelet_axis_cache[axis]
+
+        if axis == "x":
+            levels = int(self.b.wav_levels_x)
+            family = self.b.wav_family_x
+            order = int(self.b.wav_order_x)
+            L = float(self.p.Lh)
+            dL = float(self.p.spatial_reso[0])
+        elif axis == "z":
+            levels = int(self.b.wav_levels_z)
+            family = self.b.wav_family_z
+            order = int(self.b.wav_order_z)
+            L = float(self.p.Lv)
+            dL = float(self.p.spatial_reso[1])
+        else:
+            raise ValueError(f"Unknown axis {axis!r}")
+
+        grid = np.arange(0.0, L + self._GRID_ENDPOINT_EPS, dL, dtype=float)
+        grid_norm = grid / L
+        wavelet_name = self._wavelet_name(family, order)
+        if wavelet_name == "haar":
+            # Evaluated once per axis and then cached in self._wavelet_axis_cache.
+            vals = np.stack([self._haar_val(xn, levels) for xn in grid_norm], axis=1)
+            deriv = np.zeros_like(vals)
+        else:
+            vals = self._build_nonhaar_bank(grid_norm, levels, wavelet_name)
+            edge_order = 2 if grid.size >= self._MIN_SAMPLES_FOR_EDGE_ORDER2 else 1
+            deriv = np.gradient(vals, grid, axis=1, edge_order=edge_order)
+
+        cache = {
+            "grid_norm": grid_norm,
+            "vals": vals,
+            "deriv": deriv,
+            "endpoint_tol": self._GRID_ENDPOINT_EPS / L,
+        }
+        self._wavelet_axis_cache[axis] = cache
+        return cache
+
+    def _wavelet_eval_axis(self, axis, x_norm, deriv=False):
+        cache = self._get_wavelet_axis_cache(axis)
+        bank = cache["deriv"] if deriv else cache["vals"]
+        grid_norm = cache["grid_norm"]
+        atol = cache["endpoint_tol"]
+        if np.isclose(x_norm, grid_norm[0], atol=atol):
+            return bank[:, 0].copy()
+        if np.isclose(x_norm, grid_norm[-1], atol=atol):
+            return bank[:, -1].copy()
+        return np.array(
+            [np.interp(x_norm, grid_norm, row) for row in bank],
+            dtype=float,
+        )
 
     # ---- Chebyshev polynomials of the first kind ---------------------
     def _chebyshev_val(self, x_norm, order):
@@ -411,8 +555,8 @@ class BasisFactory:
             ])
         if name == "wavelet":
             return np.concatenate([
-                self._haar_val(x, self.b.wav_levels_x),
-                self._haar_val(z, self.b.wav_levels_z),
+                self._wavelet_eval_axis("x", x, deriv=False),
+                self._wavelet_eval_axis("z", z, deriv=False),
             ])
         if name == "rbf":
             return np.concatenate([
@@ -451,11 +595,10 @@ class BasisFactory:
                 np.zeros(self.b.orderz),
             ])
         if name == "wavelet":
-            # Haar wavelets are piecewise-constant → derivative ≈ 0
-            return np.zeros(
-                self._haar_size(self.b.wav_levels_x)
-                + self._haar_size(self.b.wav_levels_z)
-            )
+            return np.concatenate([
+                self._wavelet_eval_axis("x", x, deriv=True),
+                np.zeros(self._wavelet_eval_axis("z", z, deriv=False).size),
+            ])
         if name == "rbf":
             return np.concatenate([
                 self._rbf_dval(x, self.b.rbf_centers_x, self.b.rbf_shape, self.p.Lh),
@@ -494,10 +637,10 @@ class BasisFactory:
                 self._chebyshev_dval(z, self.b.orderz, self.p.Lv),
             ])
         if name == "wavelet":
-            return np.zeros(
-                self._haar_size(self.b.wav_levels_x)
-                + self._haar_size(self.b.wav_levels_z)
-            )
+            return np.concatenate([
+                np.zeros(self._wavelet_eval_axis("x", x, deriv=False).size),
+                self._wavelet_eval_axis("z", z, deriv=True),
+            ])
         if name == "rbf":
             return np.concatenate([
                 np.zeros(self.b.rbf_centers_x),
