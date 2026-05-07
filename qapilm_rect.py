@@ -370,7 +370,10 @@ class BasisFactory:
             return "haar"
         if fam == "coif":
             if int(order) < 1:
-                raise ValueError(f"Invalid coif order {order}. Use a positive integer.")
+                raise ValueError(
+                    f"Invalid coif order {order}. Use a positive integer "
+                    "(typically 1..17 in PyWavelets)."
+                )
             return f"coif{int(order)}"
         if fam == "bior":
             if int(order) not in self._BIOR_ORDER_MAP:
