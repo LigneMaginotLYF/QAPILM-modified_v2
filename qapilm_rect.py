@@ -356,6 +356,13 @@ class BasisFactory:
         14: "5.5",
         15: "6.8",
     }
+    # Match the solver-grid endpoint inclusion convention used elsewhere
+    # (np.arange(0, L + 0.001, dL)).
+    _GRID_ENDPOINT_EPS = 0.001
+    # wavefun sampling level used to build smooth interpolation tables.
+    _WAVEFUN_SAMPLE_LEVEL = 8
+    # np.gradient(edge_order=2) needs at least 3 samples along the axis.
+    _MIN_SAMPLES_FOR_EDGE_ORDER2 = 3
 
     def _wavelet_name(self, family, order):
         fam = str(family).strip().lower()
@@ -386,7 +393,7 @@ class BasisFactory:
                 "Install it with: pip install PyWavelets"
             ) from exc
         wavelet = pywt.Wavelet(wavelet_name)
-        wf = wavelet.wavefun(level=8)
+        wf = wavelet.wavefun(level=self._WAVEFUN_SAMPLE_LEVEL)
         if len(wf) == 3:
             _, psi, x = wf
         elif len(wf) == 5:
@@ -427,7 +434,7 @@ class BasisFactory:
         else:
             raise ValueError(f"Unknown axis {axis!r}")
 
-        grid = np.arange(0.0, L + 0.001, dL, dtype=float)
+        grid = np.arange(0.0, L + self._GRID_ENDPOINT_EPS, dL, dtype=float)
         grid_norm = grid / L
         wavelet_name = self._wavelet_name(family, order)
         if wavelet_name == "haar":
@@ -435,7 +442,7 @@ class BasisFactory:
             deriv = np.zeros_like(vals)
         else:
             vals = self._build_nonhaar_bank(grid_norm, levels, wavelet_name)
-            edge_order = 2 if grid.size >= 3 else 1
+            edge_order = 2 if grid.size >= self._MIN_SAMPLES_FOR_EDGE_ORDER2 else 1
             deriv = np.gradient(vals, grid, axis=1, edge_order=edge_order)
 
         cache = {"grid_norm": grid_norm, "vals": vals, "deriv": deriv}
