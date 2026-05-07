@@ -359,7 +359,7 @@ class BasisFactory:
     # Match the solver-grid endpoint inclusion convention used elsewhere
     # (np.arange(0, L + 0.001, dL)).
     _GRID_ENDPOINT_EPS = 0.001
-    # wavefun sampling level used to build smooth interpolation tables.
+    # PyWavelets wavefun() decomposition level for sampled interpolation tables.
     _WAVEFUN_SAMPLE_LEVEL = 8
     # np.gradient(edge_order=2) needs at least 3 samples along the axis.
     _MIN_SAMPLES_FOR_EDGE_ORDER2 = 3
@@ -438,6 +438,7 @@ class BasisFactory:
         grid_norm = grid / L
         wavelet_name = self._wavelet_name(family, order)
         if wavelet_name == "haar":
+            # Evaluated once per axis and then cached in self._wavelet_axis_cache.
             vals = np.stack([self._haar_val(xn, levels) for xn in grid_norm], axis=1)
             deriv = np.zeros_like(vals)
         else:
@@ -445,7 +446,12 @@ class BasisFactory:
             edge_order = 2 if grid.size >= self._MIN_SAMPLES_FOR_EDGE_ORDER2 else 1
             deriv = np.gradient(vals, grid, axis=1, edge_order=edge_order)
 
-        cache = {"grid_norm": grid_norm, "vals": vals, "deriv": deriv}
+        cache = {
+            "grid_norm": grid_norm,
+            "vals": vals,
+            "deriv": deriv,
+            "endpoint_tol": self._GRID_ENDPOINT_EPS / L,
+        }
         self._wavelet_axis_cache[axis] = cache
         return cache
 
@@ -453,9 +459,10 @@ class BasisFactory:
         cache = self._get_wavelet_axis_cache(axis)
         bank = cache["deriv"] if deriv else cache["vals"]
         grid_norm = cache["grid_norm"]
-        if np.isclose(x_norm, grid_norm[0]):
+        atol = cache["endpoint_tol"]
+        if np.isclose(x_norm, grid_norm[0], atol=atol):
             return bank[:, 0].copy()
-        if np.isclose(x_norm, grid_norm[-1]):
+        if np.isclose(x_norm, grid_norm[-1], atol=atol):
             return bank[:, -1].copy()
         return np.array(
             [np.interp(x_norm, grid_norm, row) for row in bank],
