@@ -12,6 +12,7 @@ Usage
 Required packages (beyond standard library + numpy/matplotlib/scipy already used
 by qapilm_rect.py):
     pip install pyyaml
+    pip install PyWavelets   # required for non-Haar wavelet families
 
 See README.md for full instructions.
 """
@@ -116,6 +117,10 @@ def _cfg_to_dataclasses(cfg: dict):
         orderz           = int(b_raw.get("orderz",           BasisConfig.orderz)),
         wav_levels_x     = int(b_raw.get("wav_levels_x",     BasisConfig.wav_levels_x)),
         wav_levels_z     = int(b_raw.get("wav_levels_z",     BasisConfig.wav_levels_z)),
+        wav_family_x     = str(b_raw.get("wav_family_x",     BasisConfig.wav_family_x)),
+        wav_family_z     = str(b_raw.get("wav_family_z",     BasisConfig.wav_family_z)),
+        wav_order_x      = int(b_raw.get("wav_order_x",      BasisConfig.wav_order_x)),
+        wav_order_z      = int(b_raw.get("wav_order_z",      BasisConfig.wav_order_z)),
         rbf_centers_x    = int(b_raw.get("rbf_centers_x",    BasisConfig.rbf_centers_x)),
         rbf_centers_z    = int(b_raw.get("rbf_centers_z",    BasisConfig.rbf_centers_z)),
         rbf_shape        = float(b_raw.get("rbf_shape",       BasisConfig.rbf_shape)),

@@ -10,7 +10,7 @@ inverse analysis, with batch-sweep support via YAML configuration files.
 The solver recovers the heterogeneous coefficient-of-consolidation field
 `C(x,z)` from sparse observations of both `C` and the excess pore-water
 pressure `u(x,z,t)`.  `C` is parameterised as a weighted sum of basis
-functions (polynomial-sine, DCT, Legendre, or Haar wavelet) passed through
+functions (polynomial-sine, DCT, Legendre, or wavelet families such as Haar / Coiflet / biorthogonal) passed through
 a softplus activation.  The forward model is an explicit finite-difference
 time march; the inverse step uses forward-mode sensitivity recursion with an
 Adam optimiser and an ε-insensitive loss.
@@ -33,10 +33,10 @@ Adam optimiser and an ε-insensitive loss.
 
 ## Dependencies
 
-Standard Python scientific stack plus **PyYAML** (and **PyTorch** for the PINN):
+Standard Python scientific stack plus **PyYAML** and **PyWavelets** (and **PyTorch** for the PINN):
 
 ```bash
-pip install numpy scipy matplotlib seaborn pyyaml
+pip install numpy scipy matplotlib seaborn pyyaml PyWavelets
 pip install torch          # for vanilla_PINN_2D_rect.py
 ```
 
@@ -382,7 +382,7 @@ clean and self-contained.
 | `sin`        | Sine harmonics sin(2ᵏ x̄), sin(2ᵏ z̄) | ✓ | — |
 | `dct`        | Discrete cosine cos(πk x̄), cos(πk z̄) | ✓ | — |
 | `legendre`   | Legendre polynomials Pₖ(x̄), Pₖ(z̄) | ✓ | — |
-| `wavelet`    | Haar wavelets | — | ✓ |
+| `wavelet`    | Wavelets with selectable axis-wise family/order (`haar`, `coifN`, `biorNr.Nd`) | — | ✓ |
 
 ### Duo types (any two components joined with `+`)
 
@@ -391,13 +391,13 @@ clean and self-contained.
 | `poly+sin`   | polynomial + sine (same as legacy `poly_sin`) |
 | `poly+dct`   | polynomial + DCT |
 | `poly+legendre` | polynomial + Legendre |
-| `poly+wavelet`  | polynomial + Haar wavelets |
+| `poly+wavelet`  | polynomial + selectable wavelets |
 | `sin+dct`    | sine + DCT |
 | `sin+legendre` | sine + Legendre |
-| `sin+wavelet`  | sine + Haar wavelets |
+| `sin+wavelet`  | sine + selectable wavelets |
 | `dct+legendre` | DCT + Legendre |
-| `dct+wavelet`  | DCT + Haar wavelets |
-| `legendre+wavelet` | Legendre + Haar wavelets |
+| `dct+wavelet`  | DCT + selectable wavelets |
+| `legendre+wavelet` | Legendre + selectable wavelets |
 
 > **Backward-compatible alias**: `"poly_sin"` is silently mapped to
 > `"poly+sin"`.  Existing config files using `type: "poly_sin"` will
@@ -411,6 +411,15 @@ clean and self-contained.
 Higher `orderx` / `orderz` increases the number of basis functions and
 the expressiveness of the estimated `C` field, at the cost of more
 computation and potential overfitting with sparse data.
+
+For `basis.type: "wavelet"`:
+- `basis.wav_levels_x` / `basis.wav_levels_z` control dyadic decomposition depth.
+- `basis.wav_family_x` / `basis.wav_family_z` select family per axis: `haar`, `coif`, `bior`.
+- `basis.wav_order_x` / `basis.wav_order_z` select order per axis:
+  - `haar`: order ignored
+  - `coif`: order `N` means `coifN`
+  - `bior`: integer order maps to supported names:
+    `1->bior1.1, 2->bior1.3, 3->bior1.5, 4->bior2.2, 5->bior2.4, 6->bior2.6, 7->bior2.8, 8->bior3.1, 9->bior3.3, 10->bior3.5, 11->bior3.7, 12->bior3.9, 13->bior4.4, 14->bior5.5, 15->bior6.8`
 
 ---
 

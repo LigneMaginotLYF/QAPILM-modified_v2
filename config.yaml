@@ -63,7 +63,7 @@ basis:
   #   "dct"       – discrete cosine  cos(πk x̄) and cos(πk z̄)
   #   "legendre"  – Legendre polynomials P_k(x̄) and P_k(z̄)
   #   "chebyshev" – Chebyshev polynomials of the first kind T_k(x̄) and T_k(z̄)
-  #   "wavelet"   – Haar wavelets
+  #   "wavelet"   – wavelets (family/order selectable per axis: haar, coif, bior)
   #   "rbf"       – Gaussian radial basis functions along x and z separately
   #   "bspline"   – Uniform cubic B-splines along x and z separately
   #
@@ -79,9 +79,28 @@ basis:
   orderx: 1
   orderz: 3
 
-  # Haar wavelet decomposition levels (only used when type includes "wavelet")
+  # Wavelet decomposition levels (only used when type includes "wavelet")
   wav_levels_x: 2
   wav_levels_z: 2
+
+  # Wavelet family per axis (only used when type includes "wavelet")
+  # Allowed values:
+  #   haar  -> Haar wavelet
+  #   coif  -> Coiflets; uses wav_order_* as N in "coifN"
+  #   bior  -> biorthogonal; wav_order_* maps to supported names:
+  #            1->bior1.1, 2->bior1.3, 3->bior1.5, 4->bior2.2, 5->bior2.4,
+  #            6->bior2.6, 7->bior2.8, 8->bior3.1, 9->bior3.3, 10->bior3.5,
+  #            11->bior3.7, 12->bior3.9, 13->bior4.4, 14->bior5.5, 15->bior6.8
+  # Defaults preserve existing behaviour (Haar along both axes).
+  wav_family_x: "haar"
+  wav_family_z: "haar"
+
+  # Wavelet order per axis (only used when type includes "wavelet")
+  #   haar: ignored
+  #   coif: N in coifN
+  #   bior: integer key in the mapping listed above
+  wav_order_x: 1
+  wav_order_z: 1
 
   # Gaussian RBF: number of equi-spaced centres per axis and shape parameter ε
   # (only used when type includes "rbf")
